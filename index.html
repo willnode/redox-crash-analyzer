@@ -1,243 +1,424 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <title>Redox Page Fault Analyzer</title>
-    <style>
-        :root {
-            --bg-color: #1e1e1e; --text-color: #d4d4d4; --primary-color: #569cd6;
-            --input-bg: #252526; --border-color: #3e3e42; --error-color: #f48771;
-            --success-color: #6a9955; --highlight-bg: #5a5a22;
-        }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-color); color: var(--text-color); margin: 0; padding: 2em; }
-        #app { display: grid; grid-template-columns: 40% 1fr; gap: 2em; height: calc(100vh - 4em); }
-        .controls { display: flex; flex-direction: column; gap: 1em; }
-        h1, h2 { color: var(--primary-color); margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5em; }
-        label { font-weight: bold; color: #ccc; }
-        textarea, .dir-picker { width: 100%; box-sizing: border-box; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.5em; font-family: "Fira Code", monospace; }
-        textarea { resize: vertical; min-height: 100px; }
-        .dir-picker { display: flex; justify-content: space-between; align-items: center; }
-        .dir-picker span { opacity: 0.7; }
-        button { background: var(--primary-color); color: white; border: none; padding: 0.8em 1.2em; border-radius: 4px; font-size: 1em; cursor: pointer; transition: background 0.2s; }
-        button:hover { background: #408ac9; }
-        button:disabled { background: #555; cursor: not-allowed; }
-        .output-view { display: flex; flex-direction: column; background: var(--input-bg); border-radius: 4px; overflow: hidden; }
-        .status { padding: 1em; text-align: center; border-bottom: 1px solid var(--border-color); }
-        .error { color: var(--error-color); }
-        .success { color: var(--success-color); }
-        pre { flex-grow: 1; margin: 0; padding: 1em; white-space: pre; overflow-x: auto; font-family: "Fira Code", "Courier New", monospace; color: #9cdcfe; }
-        .highlight-rip { background-color: var(--highlight-bg); display: block; }
-        .offset { color: #6a9955; }
-        .bytes { color: #b5cea8; }
-        .mnemonic { color: #c586c0; font-weight: bold; }
-    </style>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/@alexaltea/capstone-js@3.0.5/dist/capstone.min.js"></script>
+  <meta charset="UTF-8">
+  <title>ELF Crash Analyzer (Virtual View)</title>
+  <style>
+    :root {
+      --bg-color: #1e1e1e;
+      --text-color: #d4d4d4;
+      --primary-color: #569cd6;
+      --input-bg: #252526;
+      --border-color: #3e3e42;
+      --error-color: #f48771;
+      --success-color: #6a9955;
+      --highlight-bg: #5a5a22;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-color);
+      color: var(--text-color);
+      margin: 0;
+      padding: 2em;
+    }
+
+    #app {
+      display: grid;
+      grid-template-columns: 40% 1fr;
+      gap: 2em;
+      height: calc(100vh - 4em);
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 1em;
+    }
+
+    h1,
+    h2 {
+      color: var(--primary-color);
+      margin-top: 0;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.5em;
+    }
+
+    label {
+      font-weight: bold;
+      color: #ccc;
+    }
+
+    textarea,
+    .dir-picker,
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--input-bg);
+      color: var(--text-color);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 0.5em;
+      font-family: "Fira Code", monospace;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+
+    .dir-picker {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .dir-picker span {
+      opacity: 0.7;
+    }
+
+    button {
+      background: var(--primary-color);
+      color: white;
+      border: none;
+      padding: 0.8em 1.2em;
+      border-radius: 4px;
+      font-size: 1em;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #408ac9;
+    }
+
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+
+    .output-view {
+      display: flex;
+      flex-direction: column;
+      background: var(--input-bg);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .status {
+      padding: 1em;
+      text-align: center;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .jump-controls {
+      display: flex;
+      gap: 0.5em;
+      padding: 0.5em 1em;
+      border-bottom: 1px solid var(--border-color);
+      background: #2a2a2d;
+    }
+
+    .error {
+      color: var(--error-color);
+    }
+
+    .success {
+      color: var(--success-color);
+    }
+
+    pre {
+      flex-grow: 1;
+      margin: 0;
+      padding: 1em;
+      white-space: pre;
+      overflow-x: auto;
+      font-family: "Fira Code", "Courier New", monospace;
+      color: #9cdcfe;
+    }
+
+    .highlight {
+      background-color: var(--highlight-bg);
+      display: block;
+    }
+
+    .offset {
+      color: #6a9955;
+    }
+
+    .bytes {
+      color: #b5cea8;
+    }
+
+    .mnemonic {
+      color: #c586c0;
+      font-weight: bold;
+    }
+  </style>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/@alexaltea/capstone-js@3.0.5/dist/capstone.min.js"></script>
 </head>
+
 <body>
 
-<div id="app">
+  <div id="app">
     <div class="controls">
-        <h1>ELF Crash Analyzer</h1>
-        
-        <div>
-            <label for="fault-log">1. Page Fault Message</label>
-            <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
+      <h1>ELF Crash Analyzer</h1>
+      <div>
+        <label for="fault-log">1. Page Fault Message</label>
+        <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
+      </div>
+      <div>
+        <label for="ld-debug-log">2. LD_DEBUG Output</label>
+        <textarea id="ld-debug-log" v-model="ldDebugLog"
+          placeholder="Paste 'env LD_DEBUG=all ...' output here..."></textarea>
+      </div>
+      <div>
+        <label for="sysroot-dir">3. Sysroot Directory</label>
+        <div class="dir-picker">
+          <span>{{ sysrootDirHandle ? sysrootDirHandle.name : 'No directory selected' }}</span>
+          <button @click="selectDirectory">Select Sysroot</button>
         </div>
-
-        <div>
-            <label for="ld-debug-log">2. LD_DEBUG Output</label>
-            <textarea id="ld-debug-log" v-model="ldDebugLog" placeholder="Paste 'env LD_DEBUG=all ...' output here..."></textarea>
-        </div>
-
-        <div>
-            <label for="sysroot-dir">3. Sysroot Directory</label>
-            <div class="dir-picker">
-                <span>{{ sysrootDirHandle ? sysrootDirHandle.name : 'No directory selected' }}</span>
-                <button @click="selectDirectory">Select Sysroot</button>
-            </div>
-             <small style="opacity: 0.6;">Select the root folder containing the binaries (e.g., a mounted disk image or chroot folder). Requires a secure context (localhost/https).</small>
-        </div>
-
-        <button @click="analyzeCrash" :disabled="isLoading || !isReady">
-            {{ isLoading ? 'Analyzing...' : 'Analyze Crash' }}
-        </button>
+        <small style="opacity: 0.6;">Select the root folder containing the binaries. Requires a secure context
+          (localhost/https).</small>
+      </div>
+      <button @click="analyzeCrash" :disabled="isLoading || !isReady">
+        {{ isLoading ? 'Analyzing...' : 'Analyze Crash' }}
+      </button>
     </div>
 
     <div class="output-view">
-        <div class="status">
-            <div v-if="error" class="error">{{ error }}</div>
-            <div v-else-if="successMessage" class="success">{{ successMessage }}</div>
-            <div v-else>Disassembly Output</div>
-        </div>
-        <pre v-html="disassemblyOutput"></pre>
+      <div class="status">
+        <div v-if="error" class="error">{{ error }}</div>
+        <div v-else-if="successMessage" class="success">{{ successMessage }}</div>
+        <div v-else>Disassembly Output</div>
+      </div>
+
+      <div class="jump-controls" v-if="analysisData">
+        <input type="text" v-model="jumpAddress" placeholder="0x..." @keyup.enter="jumpToAddress" />
+        <button @click="jumpToAddress">Jump</button>
+      </div>
+
+      <pre v-html="disassemblyOutput"></pre>
     </div>
-</div>
+  </div>
 
-<script type="module">
+  <script type="module">
     import * as elfist from 'https://unpkg.com/@wokwi/elfist@1.0.2/dist/esm/index.js';
-
     const { createApp, ref, computed, nextTick } = Vue;
 
+    // --- Configuration for the disassembly window ---
+    const LINES_BEFORE = 100;
+    const LINES_AFTER = 100;
+    // How many extra bytes to read before the target address to ensure we can disassemble `LINES_BEFORE` instructions.
+    // Variable-length instructions mean we have to guess. 10 bytes per instruction is a safe overestimate.
+    const CONTEXT_BYTES = LINES_BEFORE * 10;
+
     createApp({
-        setup() {
-            const faultLog = ref(window.sessionStorage.faultLog || '');
-            const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
-            const sysrootDirHandle = ref(null);
-            const disassemblyOutput = ref('Waiting for analysis...');
-            const isLoading = ref(false);
-            const error = ref(null);
-            const successMessage = ref(null);
+      setup() {
+        const faultLog = ref(window.sessionStorage.faultLog || '');
+        const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
+        const sysrootDirHandle = ref(null);
+        const disassemblyOutput = ref('Waiting for analysis...');
+        const isLoading = ref(false);
+        const error = ref(null);
+        const successMessage = ref(null);
 
-            const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirHandle.value);
+        const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirHandle.value);
 
-            const selectDirectory = async () => {
-                try {
-                    sysrootDirHandle.value = await window.showDirectoryPicker();
-                    error.value = null;
-                } catch (err) {
-                    console.error("Error selecting directory:", err);
-                    error.value = "Failed to select directory. This feature only works on Chromium-based browsers.";
-                }
+        // New state to hold the analysis context for jumping
+        const analysisData = ref(null);
+        const jumpAddress = ref('');
+        const selectDirectory = async () => {
+          try {
+            sysrootDirHandle.value = await window.showDirectoryPicker();
+            error.value = null;
+          } catch (err) {
+            console.error("Error selecting directory:", err);
+            error.value = "Failed to select directory. This feature only works on Chromium-based browsers.";
+          }
+        };
+
+        // Helper to recursively find a file handle in a directory handle
+        const findFileInDirectory = async (dirHandle, path) => {
+          const parts = path.split('/').filter(p => p && p !== '.');
+          let currentHandle = dirHandle;
+          for (const part of parts.slice(0, -1)) {
+            currentHandle = await currentHandle.getDirectoryHandle(part, { create: false });
+          }
+          return await currentHandle.getFileHandle(parts[parts.length - 1], { create: false });
+        };
+
+        // This new function renders a small window of disassembly
+        const renderDisassemblyWindow = async (targetAddrBigInt) => {
+          if (!analysisData.value) return;
+          const { code, textSection, cs } = analysisData.value;
+          const targetAddrNum = Number(targetAddrBigInt);
+
+          successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
+
+          // 1. Calculate the byte offset of the target address within the .text section buffer
+          const targetOffsetInCode = targetAddrNum - textSection.addr;
+          if (targetOffsetInCode < 0 || targetOffsetInCode >= code.length) {
+            throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section.`);
+          }
+
+          // 2. Determine the chunk of the code buffer to disassemble
+          const startOffset = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
+          const codeChunk = code.slice(startOffset);
+          const chunkVirtualAddr = textSection.addr + startOffset;
+
+          // 3. Disassemble only this smaller chunk
+          const instructions = cs.disasm(codeChunk, chunkVirtualAddr);
+
+          // 4. Find the index of our target instruction in this new array
+          const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
+          if (targetIndex === -1) {
+            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
+          }
+
+          // 5. Slice the final window of instructions to display
+          const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
+          const endIndex = targetIndex + LINES_AFTER + 1;
+          const displayInstructions = instructions.slice(startIndex, endIndex);
+
+          // 6. Format for display
+          let htmlOutput = '';
+          for (const insn of displayInstructions) {
+            const isTargetLine = insn.address === targetAddrNum;
+            const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
+            const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
+            htmlOutput += `<span ${isTargetLine ? 'class="highlight" id="target-line"' : ''}>`;
+            htmlOutput += `<span class="offset">${offsetStr}:</span> <span class="bytes">${bytesStr.padEnd(20)}</span> <span class="mnemonic">${insn.mnemonic}</span> ${insn.op_str}\n`;
+            htmlOutput += `</span>`;
+          }
+
+          disassemblyOutput.value = htmlOutput;
+          successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)}`;
+
+          // 7. Scroll the target line into view
+          await nextTick();
+          const targetLine = document.getElementById('target-line');
+          if (targetLine) {
+            targetLine.scrollIntoView({ behavior: 'auto', block: 'center' });
+          }
+        };
+
+        const jumpToAddress = async () => {
+          if (!jumpAddress.value || !analysisData.value) return;
+          try {
+            isLoading.value = true;
+            error.value = null;
+            const targetAddr = BigInt("0x" + jumpAddress.value.replace('0x', ''));
+            await renderDisassemblyWindow(targetAddr);
+          } catch (e) {
+            error.value = e.message;
+          } finally {
+            isLoading.value = false;
+          }
+        };
+
+        const analyzeCrash = async () => {
+          isLoading.value = true;
+          error.value = null;
+          successMessage.value = null;
+          disassemblyOutput.value = 'Starting analysis...';
+
+          window.sessionStorage.faultLog = faultLog.value;
+          window.sessionStorage.ldDebugLog = ldDebugLog.value;
+          analysisData.value = null; // Reset previous analysis
+
+          try {
+            // 1. Parse RIP from fault log
+            const ripMatch = faultLog.value.match(/RIP:\s+([0-9a-fA-Fx]+)/);
+            if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
+            const rip = BigInt('0x' + ripMatch[1]);
+            disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
+
+            // 2. Parse memory map from LD_DEBUG
+            const memoryMap = [];
+            const ldLines = ldDebugLog.value.split('\n');
+            const mapRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
+            for (const line of ldLines) {
+              const match = line.match(mapRegex);
+              if (match) {
+                memoryMap.push({
+                  path: match[1].split("'").join("").trim(), // Clean up path
+                  start: BigInt(match[2]),
+                  end: BigInt(match[3]),
+                });
+              }
+            }
+            if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
+            disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
+
+            // 3. Find the faulting module
+            const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
+            if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.`);
+            disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
+
+            // 4. Calculate offset
+            const offset = rip - faultingModule.start;
+            disassemblyOutput.value += `\nCalculated offset: 0x${offset.toString(16)}`;
+
+            // 5. Find the file in the selected sysroot directory
+            disassemblyOutput.value += `\nSearching for ${faultingModule.path.substring(1)} in sysroot...`;
+            const fileHandle = await findFileInDirectory(sysrootDirHandle.value, faultingModule.path.substring(1)); // Remove leading '/'
+            const file = await fileHandle.getFile();
+            disassemblyOutput.value += `\nFound file: ${file.name}`;
+
+            // 6. Read and disassemble the file using elfist
+            const arrayBuffer = await file.arrayBuffer();
+            const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
+            const textSection = elf.sections.find(s => s.name === '.text');
+            if (!textSection) throw new Error("Could not find .text section.");
+
+            const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
+
+            let arch, mode;
+            // The machine enum values (62 for x86_64, 183 for AArch64) are standard.
+            // Accessing them via elf.header.machine
+            if (elf.header.machine === 62) { // EM_X86_64
+              arch = cs.ARCH_X86; mode = cs.MODE_64;
+            } else if (elf.header.machine === 183) { // EM_AARCH64
+              arch = cs.ARCH_ARM64; mode = cs.MODE_ARM;
+            } else {
+              throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
+            }
+
+            // The rest of the disassembly logic is identical
+
+            // 7. Store context for later use (jumping)
+            analysisData.value = {
+              code: code,
+              textSection: textSection,
+              cs: new cs.Capstone(arch, mode), // Create and store the Capstone instance
             };
-            
-            // Helper to recursively find a file handle in a directory handle
-            const findFileInDirectory = async (dirHandle, path) => {
-                const parts = path.split('/').filter(p => p && p !== '.');
-                let currentHandle = dirHandle;
-                for (const part of parts.slice(0, -1)) {
-                    currentHandle = await currentHandle.getDirectoryHandle(part, { create: false });
-                }
-                return await currentHandle.getFileHandle(parts[parts.length - 1], { create: false });
-            };
 
-            const analyzeCrash = async () => {
-                isLoading.value = true;
-                error.value = null;
-                successMessage.value = null;
-                disassemblyOutput.value = 'Starting analysis...';
+            jumpAddress.value = "0x" + rip.toString(16);
 
-                window.sessionStorage.faultLog = faultLog.value;
-                window.sessionStorage.ldDebugLog = ldDebugLog.value;
+            // 8. Perform the initial render around the RIP
+            await renderDisassemblyWindow(rip);
 
-                try {
-                    // 1. Parse RIP from fault log
-                    const ripMatch = faultLog.value.match(/RIP:\s+([0-9a-fA-Fx]+)/);
-                    if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
-                    const rip = BigInt('0x' + ripMatch[1]);
-                    disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
+          } catch (e) {
+            console.error("Analysis failed:", e);
+            error.value = e.message;
+            disassemblyOutput.value = `Analysis failed.\n\n${e.message}`;
+            analysisData.value = null; // Clear context on failure
+          } finally {
+            isLoading.value = false;
+          }
+        };
 
-                    // 2. Parse memory map from LD_DEBUG
-                    const memoryMap = [];
-                    const ldLines = ldDebugLog.value.split('\n');
-                    const mapRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
-                    for (const line of ldLines) {
-                        const match = line.match(mapRegex);
-                        if (match) {
-                            memoryMap.push({
-                                path: match[1].split("'").join("").trim(), // Clean up path
-                                start: BigInt(match[2]),
-                                end: BigInt(match[3]),
-                            });
-                        }
-                    }
-                    if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
-                    disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
-                    
-                    // 3. Find the faulting module
-                    const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
-                    if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.`);
-                    disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
+        // Cleanup Capstone instance when component is unmounted
+        // onUnmounted(() => { if (analysisData.value) analysisData.value.cs.close(); });
 
-                    // 4. Calculate offset
-                    const offset = rip - faultingModule.start;
-                    disassemblyOutput.value += `\nCalculated offset: 0x${offset.toString(16)}`;
-
-                    // 5. Find the file in the selected sysroot directory
-                    disassemblyOutput.value += `\nSearching for ${faultingModule.path.substring(1)} in sysroot...`;
-                    const fileHandle = await findFileInDirectory(sysrootDirHandle.value, faultingModule.path.substring(1)); // Remove leading '/'
-                    const file = await fileHandle.getFile();
-                    disassemblyOutput.value += `\nFound file: ${file.name}`;
-
-                    // 6. Read and disassemble the file using elfist
-                    const arrayBuffer = await file.arrayBuffer();
-
-                    // Use the ELFParser class from the global 'elfist' object
-                    const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
-                    
-                    // Find the .text section in the new 'elf.sections' array
-                    const textSection = elf.sections.find(s => s.name === '.text');
-                    if (!textSection) throw new Error("Could not find the .text section in the binary.");
-                    
-                    // Extract the code. Note that 'offset' and 'size' are direct properties.
-                    const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
-                    
-                    let arch, mode;
-                    // The machine enum values (62 for x86_64, 183 for AArch64) are standard.
-                    // Accessing them via elf.header.machine
-                    if (elf.header.machine === 62) { // EM_X86_64
-                        arch = cs.ARCH_X86; mode = cs.MODE_64;
-                    } else if (elf.header.machine === 183) { // EM_AARCH64
-                        arch = cs.ARCH_ARM64; mode = cs.MODE_ARM;
-                    } else {
-                        throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
-                    }
-                    
-                    // The rest of the disassembly logic is identical
-                    var d = new cs.Capstone(arch, mode);
-                    // 'textSection.addr' is the virtual address, same as before
-                    const instructions = d.disasm(code, textSection.addr);
-                    d.close();
-                                        
-                    // 7. Format output and highlight the RIP
-                    let htmlOutput = '';
-                    const ripNumber = Number(rip); // For comparison, as BigInt is not needed here
-                    for (const insn of instructions) {
-                        const isRipLine = insn.address === ripNumber;
-                        const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
-                        const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
-
-                        htmlOutput += `<span ${isRipLine ? 'class="highlight-rip" id="rip-line"' : ''}>`;
-                        htmlOutput += `<span class="offset">${offsetStr}:</span>  `;
-                        htmlOutput += `<span class="bytes">${bytesStr.padEnd(20)}</span> `;
-                        htmlOutput += `<span class="mnemonic">${insn.mnemonic}</span> ${insn.op_str}\n`;
-                        htmlOutput += `</span>`;
-                    }
-                    
-                    disassemblyOutput.value = htmlOutput;
-                    successMessage.value = `Successfully disassembled ${file.name}. Scrolled to RIP.`;
-
-                    // 8. Scroll to the highlighted line after Vue has updated the DOM
-                    await nextTick();
-                    const ripLine = document.getElementById('rip-line');
-                    if (ripLine) {
-                        ripLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
-
-                } catch (e) {
-                    console.error("Analysis failed:", e);
-                    error.value = e.message;
-                    disassemblyOutput.value = `Analysis failed.\n\n${e.message}`;
-                } finally {
-                    isLoading.value = false;
-                }
-            };
-
-            return {
-                faultLog,
-                ldDebugLog,
-                sysrootDirHandle,
-                disassemblyOutput,
-                isLoading,
-                error,
-                successMessage,
-                isReady,
-                selectDirectory,
-                analyzeCrash
-            };
-        }
+        return { faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, successMessage, isReady, analysisData, jumpAddress, selectDirectory, analyzeCrash, jumpToAddress };
+      }
     }).mount('#app');
-</script>
+  </script>
 
 </body>
+
 </html>
