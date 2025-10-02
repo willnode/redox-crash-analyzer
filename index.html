@@ -79,22 +79,22 @@
     }
 
     button {
-      background: var(--primary-color);
+      background-color: var(--primary-color);
       color: white;
       border: none;
       padding: 0.8em 1.2em;
       border-radius: 4px;
       font-size: 1em;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background-color 0.2s;
     }
 
     button:hover {
-      background: #408ac9;
+      background-color: #408ac9;
     }
 
     button:disabled {
-      background: #555;
+      background-color: #555;
       cursor: not-allowed;
     }
 
@@ -114,10 +114,23 @@
 
     .jump-controls {
       display: flex;
+      flex-direction: column;
       gap: 0.5em;
       padding: 0.5em 1em;
       border-bottom: 1px solid var(--border-color);
       background: #2a2a2d;
+    }
+
+    .jump-input-group {
+      display: flex;
+      gap: 0.5em;
+    }
+
+    .symbol-info {
+      margin-top: 0.5em;
+      color: #6a9955;
+      font-family: "Fira Code", monospace;
+      font-size: 0.9em;
     }
 
     .error {
@@ -195,8 +208,11 @@
       </div>
 
       <div class="jump-controls" v-if="analysisData">
-        <input type="text" v-model="jumpAddress" placeholder="0x..." @keyup.enter="jumpToAddress" />
-        <button @click="jumpToAddress">Jump</button>
+        <div class="jump-input-group">
+          <input type="text" v-model="jumpAddress" placeholder="0x..." @keyup.enter="jumpToAddress" />
+          <button @click="jumpToAddress">Jump</button>
+        </div>
+        <div class="symbol-info" v-if="currentSymbolName">{{ currentSymbolName }}</div>
       </div>
 
       <pre v-html="disassemblyOutput"></pre>
@@ -236,6 +252,30 @@
 
         const analysisData = ref(null);
         const jumpAddress = ref('');
+        const currentSymbolName = ref('');
+
+        const updateSymbolInfo = (targetAddrNum) => {
+          if (!analysisData.value?.symbols) {
+            currentSymbolName.value = '';
+            return;
+          }
+          const { symbols, runtimeModuleOffset } = analysisData.value;
+
+          for (const sym of symbols) {
+            if (!sym.value || !sym.size) continue; // skip broken
+
+            const symStart = Number(runtimeModuleOffset) + sym.value;
+            const symEnd = symStart + sym.size;
+
+            if (targetAddrNum >= symStart && targetAddrNum < symEnd) {
+              const offset = targetAddrNum - symStart;
+              currentSymbolName.value = `Symbol: ${sym.name} +0x${offset.toString(16)}`;
+              return;
+            }
+          }
+          currentSymbolName.value = 'Symbol: <not found in table>';
+        };
+
         const selectDirectory = async () => {
           try {
             sysrootDirHandle.value = await window.showDirectoryPicker();
@@ -271,7 +311,7 @@
 
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
           if (!analysisData.value) return;
-          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart, moduleBaseAddr } = analysisData.value;
+          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
 
           successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
@@ -314,6 +354,7 @@
 
           disassemblyOutput.value = htmlOutput;
           successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)}`;
+          updateSymbolInfo(targetAddrNum);
 
           // Scroll the target line into view
           await nextTick();
@@ -421,8 +462,8 @@
             disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
 
             // Calculate offset
-            const faultingModulePieFactor = BigInt(faultingModule.static ? 0 : 1); // non PIE object don't remap start offset, according to relibc
-            const ripOffset = rip - faultingModule.start * faultingModulePieFactor;
+            const runtimeModuleOffset = faultingModule.start * BigInt(faultingModule.static ? 0 : 1); // non PIE object don't remap start offset, according to relibc
+            const ripOffset = rip - runtimeModuleOffset;
             disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
             if (faultingModule.static) {
               disassemblyOutput.value += " (unchanged because it's not PIE)";
@@ -494,8 +535,6 @@
               throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. \n Relibc load strategy may have changed.`);
             }
 
-            const runtimeSegmentStart = faultingModule.start * faultingModulePieFactor + BigInt(mmapLayout.vaddr);
-
             let arch, mode;
             if (elf.header.machine === 62) { // EM_X86_64
               arch = cs.ARCH_X86; mode = cs.MODE_64;
@@ -509,14 +548,17 @@
               throw new Error("Could not find the .text section in the ELF file.");
             }
             const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
-            const runtimeTextSectionStart = faultingModule.start * faultingModulePieFactor + BigInt(textSection.addr);
+
+            // Useful for diagnostics
+            console.log(window.elf = elf);
 
             // Store context for later use (jumping)
             analysisData.value = {
               code,
-              runtimeSegmentStart,
-              runtimeTextSectionStart,
-              moduleBaseAddr: faultingModule.start,
+              runtimeSegmentStart: runtimeModuleOffset + BigInt(mmapLayout.vaddr),
+              runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
+              runtimeModuleOffset,
+              symbols: elf.symbols,
               cs: new cs.Capstone(arch, mode),
             };
 
@@ -538,7 +580,7 @@
         // Cleanup Capstone instance when component is unmounted
         // onUnmounted(() => { if (analysisData.value) analysisData.value.cs.close(); });
 
-        return { faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, successMessage, isReady, analysisData, jumpAddress, selectDirectory, analyzeCrash, jumpToAddress };
+        return { faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, successMessage, isReady, analysisData, jumpAddress, currentSymbolName, selectDirectory, analyzeCrash, jumpToAddress };
       }
     }).mount('#app');
   </script>
