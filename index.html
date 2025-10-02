@@ -261,7 +261,7 @@
           } catch (error) {
             // this is probably pointing to a symlink, but symlink is not supported here
             let files = await Array.fromAsync(currentHandle.entries());
-            let file = files.find(x => x[0].startsWith(fileName) );
+            let file = files.find(x => x[0].startsWith(fileName));
             if (file) {
               return file[1];
             }
@@ -386,6 +386,7 @@
                     path: objectPath,
                     start: BigInt(loadingMatch[2]),
                     end: BigInt(loadingMatch[3]),
+                    static: false,
                   });
                 }
 
@@ -394,11 +395,25 @@
               }
             }
 
+            if (memoryMap.length === 0) {
+              // maybe this is static
+              const nameRegex = /NAME ([\w\/\-]+)/;
+              const nameFound = faultLog.value.match(nameRegex);
+              if (nameFound) {
+                const objectPath = nameFound[1];
+                memoryMap.push({
+                  path: objectPath,
+                  start: BigInt(0),
+                  static: true,
+                });
+              }
+            }
+
             if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
             disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
 
             // Find the faulting module
-            const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
+            const faultingModule = memoryMap.find(m => m.static || (rip >= m.start && rip <= m.end));
             if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.`);
             disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
 
@@ -467,7 +482,7 @@
               // This could be expanded later to show a hex dump of the data instead.
               throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}). This indicates a data access fault, not an instruction fetch fault.`);
             }
-            const moduleSize = Number(faultingModule.end - faultingModule.start);
+            const moduleSize = faultingModule.static ? mmapLayout.memsz : Number(faultingModule.end - faultingModule.start);
             if (mmapLayout.memsz != moduleSize) {
               throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. Relibc load strategy may have changed.`);
             }
