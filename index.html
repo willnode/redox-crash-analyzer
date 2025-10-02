@@ -253,24 +253,29 @@
         // This new function renders a small window of disassembly
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
           if (!analysisData.value) return;
-          const { code, textSection, cs } = analysisData.value;
+          const { code, cs, runtimeSegmentStart, moduleBaseAddr } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
 
           successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
+          // 1. Calculate the REAL runtime virtual address of the .text section.
+          // const runtimeTextSectionStart = moduleBaseAddr + BigInt(runtimeSegmentStart);
 
-          // 1. Calculate the byte offset of the target address within the .text section buffer
-          const targetOffsetInCode = targetAddrNum - textSection.addr;
+          // 2. Calculate the byte offset of the target address relative to the start of the .text section.
+          const targetOffsetInCode = Number(targetAddrBigInt - moduleBaseAddr - runtimeSegmentStart);
+
+          // 3. Validate that this offset is within the bounds of our .text data buffer.
           if (targetOffsetInCode < 0 || targetOffsetInCode >= code.length) {
-            throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section.`);
+            throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
           }
 
-          // 2. Determine the chunk of the code buffer to disassemble
-          const startOffset = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
-          const codeChunk = code.slice(startOffset);
-          const chunkVirtualAddr = textSection.addr + startOffset;
+          // 4. Determine the chunk of the code buffer to disassemble based on the calculated offset.
+          const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
+          const codeChunk = code.slice(startOffsetInData);
 
+          // 5. The virtual address for Capstone must be the REAL runtime address of our chunk's start.
+          const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
           // 3. Disassemble only this smaller chunk
-          const instructions = cs.disasm(codeChunk, chunkVirtualAddr);
+          const instructions = cs.disasm(codeChunk, Number(runtimeSegmentStart));
 
           // 4. Find the index of our target instruction in this new array
           const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
@@ -371,14 +376,57 @@
             // 6. Read and disassemble the file using elfist
             const arrayBuffer = await file.arrayBuffer();
             const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
-            const textSection = elf.sections.find(s => s.name === '.text');
-            if (!textSection) throw new Error("Could not find .text section.");
 
-            const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
+            // Find the executable PT_LOAD segment.
+            // A segment is a program header. ph.type === 1 means PT_LOAD.
+            // ph.flags & 1 means the executable flag (PF_X) is set.
+
+
+            // 1. Filter to get ALL executable PT_LOAD segments, not just the first one.
+            const PF_X = 1;
+            const executableSegments = elf.program.filter(ph => ph.type === 1 && (ph.flags & PF_X));
+
+            if (executableSegments.length === 0) {
+              throw new Error("Could not find any executable PT_LOAD segments in the ELF file.");
+            }
+
+            // The segment is relative to ELF binary
+            let containingSegment = null;
+            for (const segment of executableSegments) {
+              let { vaddr, memsz, offset } = segment;
+              // offset is usually zero on Redox GCC
+
+              if (containingSegment == null) {
+                containingSegment = { vaddr, memsz, offset };
+              } else {
+                if (vaddr + memsz > containingSegment.vaddr + containingSegment.memsz) {
+                  containingSegment.memsz = vaddr + memsz - containingSegment.vaddr;
+                }
+                if (offset + memsz > containingSegment.offset + containingSegment.memsz) {
+                  containingSegment.memsz = offset + memsz - containingSegment.offset;
+                }
+                if (vaddr < containingSegment.vaddr) {
+                  containingSegment.memsz -= containingSegment.vaddr - vaddr;
+                  containingSegment.vaddr = vaddr;
+                }
+                if (offset < containingSegment.offset) {
+                  containingSegment.memsz -= containingSegment.offset - offset;
+                  containingSegment.offset = offset;
+                }
+              }
+            }
+
+            if (!containingSegment) {
+              throw new Error(`RIP 0x${rip.toString(16)} does not fall within any executable PT_LOAD segment.`);
+            }
+
+            // 3. Use the correct `containingSegment` for the rest of the logic.
+            // p_filesz is the size on disk, which we use to read the bytes.
+            const code = new Uint8Array(arrayBuffer, containingSegment.offset, containingSegment.filesz);
+
+            const runtimeSegmentStart = BigInt(containingSegment.vaddr);
 
             let arch, mode;
-            // The machine enum values (62 for x86_64, 183 for AArch64) are standard.
-            // Accessing them via elf.header.machine
             if (elf.header.machine === 62) { // EM_X86_64
               arch = cs.ARCH_X86; mode = cs.MODE_64;
             } else if (elf.header.machine === 183) { // EM_AARCH64
@@ -386,14 +434,12 @@
             } else {
               throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
             }
-
-            // The rest of the disassembly logic is identical
-
             // 7. Store context for later use (jumping)
             analysisData.value = {
-              code: code,
-              textSection: textSection,
-              cs: new cs.Capstone(arch, mode), // Create and store the Capstone instance
+              code,
+              runtimeSegmentStart,
+              cs: new cs.Capstone(arch, mode),
+              moduleBaseAddr: faultingModule.start,
             };
 
             jumpAddress.value = "0x" + rip.toString(16);
