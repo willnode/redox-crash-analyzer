@@ -210,7 +210,7 @@
     // --- Configuration for the disassembly window ---
     const LINES_BEFORE = 100;
     const LINES_AFTER = 100;
-  
+
     // How many extra bytes to read before the target address to ensure we can disassemble `LINES_BEFORE` instructions.
     // Variable-length instructions mean we have to guess. 10 bytes per instruction is a safe overestimate.
     const CONTEXT_BYTES = LINES_BEFORE * 10;
@@ -247,12 +247,26 @@
         };
 
         const findFileInDirectory = async (dirHandle, path) => {
+          if (path.startsWith('lib')) {
+            path = 'usr/' + path;
+          }
           const parts = path.split('/').filter(p => p && p !== '.');
           let currentHandle = dirHandle;
           for (const part of parts.slice(0, -1)) {
             currentHandle = await currentHandle.getDirectoryHandle(part, { create: false });
           }
-          return await currentHandle.getFileHandle(parts[parts.length - 1], { create: false });
+          const fileName = parts[parts.length - 1];
+          try {
+            return (await currentHandle.getFileHandle(fileName, { create: false }));
+          } catch (error) {
+            // this is probably pointing to a symlink, but symlink is not supported here
+            let files = await Array.fromAsync(currentHandle.entries());
+            let file = files.find(x => x[0].startsWith(fileName) );
+            if (file) {
+              return file[1];
+            }
+            throw new Error(`Can't find file ${path}`);
+          }
         };
 
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
@@ -343,17 +357,43 @@
             // Parse memory map from LD_DEBUG
             const memoryMap = [];
             const ldLines = ldDebugLog.value.split('\n');
-            const mapRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
+
+            let lastFoundPath = null;
+            const foundAtRegex = /found at '(.*?)'/;
+            const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
+
             for (const line of ldLines) {
-              const match = line.match(mapRegex);
-              if (match) {
-                memoryMap.push({
-                  path: match[1].split("'").join("").trim(), // Clean up path
-                  start: BigInt(match[2]),
-                  end: BigInt(match[3]),
-                });
+              const foundMatch = line.match(foundAtRegex);
+              if (foundMatch) {
+                // Remember the full path when we see "found at..."
+                lastFoundPath = foundMatch[1];
+                continue; // This line is processed, move to the next
+              }
+
+              const loadingMatch = line.match(loadingObjectRegex);
+              if (loadingMatch) {
+                let objectPath = loadingMatch[1].split("'").join("").trim();
+
+                // If the path from "loading object:" is not absolute (i.e., it's a short name),
+                // then we must use the full path we remembered from the previous line.
+                if (!objectPath.startsWith('/') && lastFoundPath) {
+                  objectPath = lastFoundPath;
+                }
+
+                // Only add to the map if we have a valid path
+                if (objectPath) {
+                  memoryMap.push({
+                    path: objectPath,
+                    start: BigInt(loadingMatch[2]),
+                    end: BigInt(loadingMatch[3]),
+                  });
+                }
+
+                // Reset the remembered path so it's not accidentally reused.
+                lastFoundPath = null;
               }
             }
+
             if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
             disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
 
@@ -367,8 +407,10 @@
             disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
 
             // Find the file in the selected sysroot directory
-            disassemblyOutput.value += `\nSearching for ${faultingModule.path.substring(1)} in sysroot...`;
-            const fileHandle = await findFileInDirectory(sysrootDirHandle.value, faultingModule.path.substring(1)); // Remove leading '/'
+            let pathModule = (faultingModule.path + '').replace(/^\//, ''); // Remove leading '/'
+
+            disassemblyOutput.value += `\nSearching for ${pathModule} in sysroot...`;
+            const fileHandle = await findFileInDirectory(sysrootDirHandle.value, pathModule);
             const file = await fileHandle.getFile();
             disassemblyOutput.value += `\nFound file: ${file.name}`;
 
