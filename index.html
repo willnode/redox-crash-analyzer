@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8">
-  <title>ELF Crash Analyzer (Virtual View)</title>
+  <title>Redox Crash Analyzer</title>
   <style>
     :root {
       --bg-color: #1e1e1e;
@@ -65,7 +65,7 @@
 
     textarea {
       resize: vertical;
-      min-height: 100px;
+      min-height: calc(30vh - 50px);
     }
 
     .dir-picker {
@@ -156,7 +156,7 @@
       font-weight: bold;
     }
   </style>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/@alexaltea/capstone-js@3.0.5/dist/capstone.min.js"></script>
 </head>
 
@@ -164,7 +164,7 @@
 
   <div id="app">
     <div class="controls">
-      <h1>ELF Crash Analyzer</h1>
+      <h1>Redox Crash Analyzer</h1>
       <div>
         <label for="fault-log">1. Page Fault Message</label>
         <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
@@ -180,8 +180,7 @@
           <span>{{ sysrootDirHandle ? sysrootDirHandle.name : 'No directory selected' }}</span>
           <button @click="selectDirectory">Select Sysroot</button>
         </div>
-        <small style="opacity: 0.6;">Select the root folder containing the binaries. Requires a secure context
-          (localhost/https).</small>
+        <small style="opacity: 0.6;">Select the root folder containing the binaries (hint: run make mount).</small>
       </div>
       <button @click="analyzeCrash" :disabled="isLoading || !isReady">
         {{ isLoading ? 'Analyzing...' : 'Analyze Crash' }}
@@ -211,23 +210,30 @@
     // --- Configuration for the disassembly window ---
     const LINES_BEFORE = 100;
     const LINES_AFTER = 100;
+  
     // How many extra bytes to read before the target address to ensure we can disassemble `LINES_BEFORE` instructions.
     // Variable-length instructions mean we have to guess. 10 bytes per instruction is a safe overestimate.
     const CONTEXT_BYTES = LINES_BEFORE * 10;
+
+    const alignUp = (number, alignment) => {
+      return (number + alignment - 1) & -alignment;
+    };
+    const alignDown = (number, alignment) => {
+      return number - (number % alignment);
+    };
 
     createApp({
       setup() {
         const faultLog = ref(window.sessionStorage.faultLog || '');
         const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
         const sysrootDirHandle = ref(null);
-        const disassemblyOutput = ref('Waiting for analysis...');
+        const disassemblyOutput = ref('Enter the Page fault message and click "Start Analyze"');
         const isLoading = ref(false);
         const error = ref(null);
         const successMessage = ref(null);
 
         const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirHandle.value);
 
-        // New state to hold the analysis context for jumping
         const analysisData = ref(null);
         const jumpAddress = ref('');
         const selectDirectory = async () => {
@@ -240,7 +246,6 @@
           }
         };
 
-        // Helper to recursively find a file handle in a directory handle
         const findFileInDirectory = async (dirHandle, path) => {
           const parts = path.split('/').filter(p => p && p !== '.');
           let currentHandle = dirHandle;
@@ -250,45 +255,39 @@
           return await currentHandle.getFileHandle(parts[parts.length - 1], { create: false });
         };
 
-        // This new function renders a small window of disassembly
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
           if (!analysisData.value) return;
-          const { code, cs, runtimeSegmentStart, moduleBaseAddr } = analysisData.value;
+          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart, moduleBaseAddr } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
 
           successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
-          // 1. Calculate the REAL runtime virtual address of the .text section.
-          // const runtimeTextSectionStart = moduleBaseAddr + BigInt(runtimeSegmentStart);
 
-          // 2. Calculate the byte offset of the target address relative to the start of the .text section.
-          const targetOffsetInCode = Number(targetAddrBigInt - moduleBaseAddr - runtimeSegmentStart);
+          const targetOffsetInCode = Number(targetAddrBigInt - runtimeTextSectionStart);
 
-          // 3. Validate that this offset is within the bounds of our .text data buffer.
           if (targetOffsetInCode < 0 || targetOffsetInCode >= code.length) {
             throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
           }
 
-          // 4. Determine the chunk of the code buffer to disassemble based on the calculated offset.
           const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
-          const codeChunk = code.slice(startOffsetInData);
-
-          // 5. The virtual address for Capstone must be the REAL runtime address of our chunk's start.
           const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
-          // 3. Disassemble only this smaller chunk
-          const instructions = cs.disasm(codeChunk, Number(runtimeSegmentStart));
+          const instructions = cs.disasm(code, Number(runtimeTextSectionStart));
 
-          // 4. Find the index of our target instruction in this new array
+          const minAddr = instructions.reduce((min, x) => Math.min(min, x.address), Infinity);
+          const maxAddr = instructions.reduce((max, x) => Math.max(max, x.address), 0);
+          disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
+          disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
+          disassemblyOutput.value += `\n looking at 0x${targetAddrNum.toString(16)}`;
+
           const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
           if (targetIndex === -1) {
-            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
+            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}. This is maybe the answer you're looking for.`);
           }
 
-          // 5. Slice the final window of instructions to display
           const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
           const endIndex = targetIndex + LINES_AFTER + 1;
           const displayInstructions = instructions.slice(startIndex, endIndex);
 
-          // 6. Format for display
+          // Format for display
           let htmlOutput = '';
           for (const insn of displayInstructions) {
             const isTargetLine = insn.address === targetAddrNum;
@@ -302,7 +301,7 @@
           disassemblyOutput.value = htmlOutput;
           successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)}`;
 
-          // 7. Scroll the target line into view
+          // Scroll the target line into view
           await nextTick();
           const targetLine = document.getElementById('target-line');
           if (targetLine) {
@@ -332,16 +331,16 @@
 
           window.sessionStorage.faultLog = faultLog.value;
           window.sessionStorage.ldDebugLog = ldDebugLog.value;
-          analysisData.value = null; // Reset previous analysis
+          analysisData.value = null;
 
           try {
-            // 1. Parse RIP from fault log
+            // Parse RIP from fault log
             const ripMatch = faultLog.value.match(/RIP:\s+([0-9a-fA-Fx]+)/);
             if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
             const rip = BigInt('0x' + ripMatch[1]);
             disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
 
-            // 2. Parse memory map from LD_DEBUG
+            // Parse memory map from LD_DEBUG
             const memoryMap = [];
             const ldLines = ldDebugLog.value.split('\n');
             const mapRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
@@ -358,60 +357,61 @@
             if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
             disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
 
-            // 3. Find the faulting module
+            // Find the faulting module
             const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
             if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.`);
             disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
 
-            // 4. Calculate offset
-            const offset = rip - faultingModule.start;
-            disassemblyOutput.value += `\nCalculated offset: 0x${offset.toString(16)}`;
+            // Calculate offset
+            const ripOffset = rip - faultingModule.start;
+            disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
 
-            // 5. Find the file in the selected sysroot directory
+            // Find the file in the selected sysroot directory
             disassemblyOutput.value += `\nSearching for ${faultingModule.path.substring(1)} in sysroot...`;
             const fileHandle = await findFileInDirectory(sysrootDirHandle.value, faultingModule.path.substring(1)); // Remove leading '/'
             const file = await fileHandle.getFile();
             disassemblyOutput.value += `\nFound file: ${file.name}`;
 
-            // 6. Read and disassemble the file using elfist
+            // Read and disassemble the file using elfist
             const arrayBuffer = await file.arrayBuffer();
             const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
 
-            // Find the executable PT_LOAD segment.
-            // A segment is a program header. ph.type === 1 means PT_LOAD.
-            // ph.flags & 1 means the executable flag (PF_X) is set.
-
-
-            // 1. Filter to get ALL executable PT_LOAD segments, not just the first one.
-            const PF_X = 1;
-            const executableSegments = elf.program.filter(ph => ph.type === 1 && (ph.flags & PF_X));
+            // get ALL PT_LOAD segments
+            const executableSegments = elf.program.filter(ph => ph.type === 1);
 
             if (executableSegments.length === 0) {
               throw new Error("Could not find any executable PT_LOAD segments in the ELF file.");
             }
 
-            // The segment is relative to ELF binary
-            let containingSegment = null;
+            let mmapLayout = null, containingSegment = null;
             for (const segment of executableSegments) {
-              let { vaddr, memsz, offset } = segment;
+              let { align, vaddr, memsz, offset } = segment;
               // offset is usually zero on Redox GCC
+              offset = alignDown(offset, align);
+              memsz = alignUp(memsz + vaddr % align, align);
+              vaddr = alignDown(vaddr, align);
 
-              if (containingSegment == null) {
-                containingSegment = { vaddr, memsz, offset };
+              disassemblyOutput.value += `\nLoaded code ${vaddr.toString(16)}-${(vaddr + memsz).toString(16)}`;
+              if (ripOffset >= vaddr && ripOffset < vaddr + memsz) {
+                containingSegment = segment;
+                disassemblyOutput.value += ` and selected`;
+              }
+              if (mmapLayout == null) {
+                mmapLayout = { vaddr, memsz, offset };
               } else {
-                if (vaddr + memsz > containingSegment.vaddr + containingSegment.memsz) {
-                  containingSegment.memsz = vaddr + memsz - containingSegment.vaddr;
+                if (vaddr + memsz > mmapLayout.vaddr + mmapLayout.memsz) {
+                  mmapLayout.memsz = vaddr + memsz - mmapLayout.vaddr;
                 }
-                if (offset + memsz > containingSegment.offset + containingSegment.memsz) {
-                  containingSegment.memsz = offset + memsz - containingSegment.offset;
+                if (offset + memsz > mmapLayout.offset + mmapLayout.memsz) {
+                  mmapLayout.memsz = offset + memsz - mmapLayout.offset;
                 }
-                if (vaddr < containingSegment.vaddr) {
-                  containingSegment.memsz -= containingSegment.vaddr - vaddr;
-                  containingSegment.vaddr = vaddr;
+                if (vaddr < mmapLayout.vaddr) {
+                  mmapLayout.memsz -= mmapLayout.vaddr - vaddr;
+                  mmapLayout.vaddr = vaddr;
                 }
-                if (offset < containingSegment.offset) {
-                  containingSegment.memsz -= containingSegment.offset - offset;
-                  containingSegment.offset = offset;
+                if (offset < mmapLayout.offset) {
+                  mmapLayout.memsz -= mmapLayout.offset - offset;
+                  mmapLayout.offset = offset;
                 }
               }
             }
@@ -419,12 +419,18 @@
             if (!containingSegment) {
               throw new Error(`RIP 0x${rip.toString(16)} does not fall within any executable PT_LOAD segment.`);
             }
+            const PF_X = 1;
+            if (!(containingSegment.flags & PF_X)) {
+              // For now, we'll throw an error, as we are set up to disassemble code.
+              // This could be expanded later to show a hex dump of the data instead.
+              throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}). This indicates a data access fault, not an instruction fetch fault.`);
+            }
+            const moduleSize = Number(faultingModule.end - faultingModule.start);
+            if (mmapLayout.memsz != moduleSize) {
+              throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. Relibc load strategy may have changed.`);
+            }
 
-            // 3. Use the correct `containingSegment` for the rest of the logic.
-            // p_filesz is the size on disk, which we use to read the bytes.
-            const code = new Uint8Array(arrayBuffer, containingSegment.offset, containingSegment.filesz);
-
-            const runtimeSegmentStart = BigInt(containingSegment.vaddr);
+            const runtimeSegmentStart = faultingModule.start + BigInt(mmapLayout.vaddr);
 
             let arch, mode;
             if (elf.header.machine === 62) { // EM_X86_64
@@ -434,23 +440,31 @@
             } else {
               throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
             }
-            // 7. Store context for later use (jumping)
+            const textSection = elf.sections.find(s => s.name === '.text');
+            if (!textSection) {
+              throw new Error("Could not find the .text section in the ELF file.");
+            }
+            const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
+            const runtimeTextSectionStart = faultingModule.start + BigInt(textSection.addr);
+
+            // Store context for later use (jumping)
             analysisData.value = {
               code,
               runtimeSegmentStart,
-              cs: new cs.Capstone(arch, mode),
+              runtimeTextSectionStart,
               moduleBaseAddr: faultingModule.start,
+              cs: new cs.Capstone(arch, mode),
             };
 
             jumpAddress.value = "0x" + rip.toString(16);
 
-            // 8. Perform the initial render around the RIP
+            // Perform the initial render around the RIP
             await renderDisassemblyWindow(rip);
 
           } catch (e) {
             console.error("Analysis failed:", e);
             error.value = e.message;
-            disassemblyOutput.value = `Analysis failed.\n\n${e.message}`;
+            disassemblyOutput.value += `\nAnalysis failed.\n\n${e.message}`;
             analysisData.value = null; // Clear context on failure
           } finally {
             isLoading.value = false;
