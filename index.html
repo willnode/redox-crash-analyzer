@@ -265,7 +265,7 @@
             if (file) {
               return file[1];
             }
-            throw new Error(`Can't find file ${path}`);
+            throw new Error(`Can't find file ${path}.\n Chrome API does not support symlink. You might want to\n alter the path in LD_DEBUG or page fault input to fix this issue.`);
           }
         };
 
@@ -294,7 +294,7 @@
 
           const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
           if (targetIndex === -1) {
-            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}. This is maybe the answer you're looking for.`);
+            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
           }
 
           const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
@@ -386,7 +386,7 @@
                     path: objectPath,
                     start: BigInt(loadingMatch[2]),
                     end: BigInt(loadingMatch[3]),
-                    static: false,
+                    static: memoryMap.length == 0, // PIE false, according to relibc
                   });
                 }
 
@@ -395,8 +395,9 @@
               }
             }
 
+            let staticBinary = false;
             if (memoryMap.length === 0) {
-              // maybe this is static
+              // assume this is static binary
               const nameRegex = /NAME ([\w\/\-]+)/;
               const nameFound = faultLog.value.match(nameRegex);
               if (nameFound) {
@@ -404,8 +405,10 @@
                 memoryMap.push({
                   path: objectPath,
                   start: BigInt(0),
+                  end: rip, // don't bother getting a correct value
                   static: true,
                 });
+                staticBinary = true;
               }
             }
 
@@ -413,13 +416,17 @@
             disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
 
             // Find the faulting module
-            const faultingModule = memoryMap.find(m => m.static || (rip >= m.start && rip <= m.end));
-            if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.`);
+            const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
+            if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.\n The code maybe loaded from mmap in the application.`);
             disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
 
             // Calculate offset
-            const ripOffset = rip - faultingModule.start;
+            const faultingModulePieFactor = BigInt(faultingModule.static ? 0 : 1); // non PIE object don't remap start offset, according to relibc
+            const ripOffset = rip - faultingModule.start * faultingModulePieFactor;
             disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
+            if (faultingModule.static) {
+              disassemblyOutput.value += " (unchanged because it's not PIE)";
+            }
 
             // Find the file in the selected sysroot directory
             let pathModule = (faultingModule.path + '').replace(/^\//, ''); // Remove leading '/'
@@ -480,14 +487,14 @@
             if (!(containingSegment.flags & PF_X)) {
               // For now, we'll throw an error, as we are set up to disassemble code.
               // This could be expanded later to show a hex dump of the data instead.
-              throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}). This indicates a data access fault, not an instruction fetch fault.`);
+              throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}).\n This indicates a data access fault, not an instruction fetch fault.`);
             }
-            const moduleSize = faultingModule.static ? mmapLayout.memsz : Number(faultingModule.end - faultingModule.start);
-            if (mmapLayout.memsz != moduleSize) {
-              throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. Relibc load strategy may have changed.`);
+            const moduleSize = Number(faultingModule.end - faultingModule.start);
+            if (!staticBinary && mmapLayout.memsz != moduleSize) {
+              throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. \n Relibc load strategy may have changed.`);
             }
 
-            const runtimeSegmentStart = faultingModule.start + BigInt(mmapLayout.vaddr);
+            const runtimeSegmentStart = faultingModule.start * faultingModulePieFactor + BigInt(mmapLayout.vaddr);
 
             let arch, mode;
             if (elf.header.machine === 62) { // EM_X86_64
@@ -502,7 +509,7 @@
               throw new Error("Could not find the .text section in the ELF file.");
             }
             const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
-            const runtimeTextSectionStart = faultingModule.start + BigInt(textSection.addr);
+            const runtimeTextSectionStart = faultingModule.start * faultingModulePieFactor + BigInt(textSection.addr);
 
             // Store context for later use (jumping)
             analysisData.value = {
