@@ -569,8 +569,8 @@
 
           } catch (e) {
             console.error("Analysis failed:", e);
-            error.value = e.message;
-            disassemblyOutput.value += `\nAnalysis failed.\n\n${e.message}`;
+            error.value = e.message || e.toString();
+            disassemblyOutput.value += `\nAnalysis failed.\n\n${error.value}`;
             analysisData.value = null; // Clear context on failure
           } finally {
             isLoading.value = false;
