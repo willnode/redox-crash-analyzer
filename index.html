@@ -224,8 +224,8 @@
     const { createApp, ref, computed, nextTick } = Vue;
 
     // --- Configuration for the disassembly window ---
-    const LINES_BEFORE = 100;
-    const LINES_AFTER = 100;
+    const LINES_BEFORE = 200;
+    const LINES_AFTER = 200;
 
     // How many extra bytes to read before the target address to ensure we can disassemble `LINES_BEFORE` instructions.
     // Variable-length instructions mean we have to guess. 10 bytes per instruction is a safe overestimate.
@@ -237,6 +237,12 @@
     const alignDown = (number, alignment) => {
       return number - (number % alignment);
     };
+
+    function waitForNextFrame() {
+      return new Promise(resolve => {
+        requestAnimationFrame(resolve);
+      });
+    }
 
     createApp({
       setup() {
@@ -269,8 +275,8 @@
 
             if (targetAddrNum >= symStart && targetAddrNum < symEnd) {
               const offset = targetAddrNum - symStart;
-              currentSymbolName.value = `Symbol: ${sym.name} +0x${offset.toString(16)}`;
-              return;
+              currentSymbolName.value = `Symbol: ${sym.name} (0x${symStart.toString(16)}:0x${symEnd.toString(16)}) +0x${offset.toString(16)}`;
+              return { start: symStart, end: symEnd, size: sym.size };
             }
           }
           currentSymbolName.value = 'Symbol: <not found in table>';
@@ -313,6 +319,7 @@
           if (!analysisData.value) return;
           const { code, cs, runtimeSegmentStart, runtimeTextSectionStart } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
+          const symbol = updateSymbolInfo(targetAddrNum);
 
           successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
 
@@ -325,19 +332,24 @@
           const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
           const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
           let instructions = [];
-          let addd = Number(runtimeTextSectionStart);
+          let addd = symbol?.start || Number(runtimeTextSectionStart);
           while (true) {
-            var i = cs.disasm(code, addd, 100000);
+            var i = cs.disasm(code, addd, Math.min(symbol?.size || Number.MAX_SAFE_INTEGER, 1000000));
             //instructions = [...instructions, ...i]
             instructions = i
-            addd = i.reduce((max, x) => Math.max(max, x.address), 0);
-            if (i.length !== 10000) {
+            addd = i[i.length - 1].address;
+            if (i.length !== 1000000 || addd >= targetAddrNum) {
               break;
             }
+
+            const line = `\n  Seeking 0x${addd.toString(16)} ${Math.trunc((addd - Number(runtimeTextSectionStart)) / (targetAddrNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
+            console.log(line);
+            disassemblyOutput.value += line;
+            await waitForNextFrame();
           }
 
-          const minAddr = instructions.reduce((min, x) => Math.min(min, x.address), Infinity);
-          const maxAddr = instructions.reduce((max, x) => Math.max(max, x.address), 0);
+          const minAddr = instructions[0].address;
+          const maxAddr = instructions[instructions.length - 1].address;
           disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
           disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
           disassemblyOutput.value += `\n looking at 0x${targetAddrNum.toString(16)}`;
@@ -364,7 +376,6 @@
 
           disassemblyOutput.value = htmlOutput;
           successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)}`;
-          updateSymbolInfo(targetAddrNum);
 
           // Scroll the target line into view
           await nextTick();
