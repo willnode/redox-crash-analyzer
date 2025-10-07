@@ -4,12 +4,12 @@
  */
 
 // Emscripten demodularize
-import capstoneWasm from './libcapstone.out.js' 
+import capstoneWasm from './libcapstone.out.js'
 
 const MCapstone = await capstoneWasm();
 var cs = {
     MCapstone: MCapstone,
-    
+
     // Return codes
     ERR_OK: 0,         // No error: everything was fine
     ERR_MEM: 1,        // Out-Of-Memory error: cs_open(), cs_disasm(), cs_disasm_iter()
@@ -93,7 +93,7 @@ var cs = {
     SUPPORT_DIET: 0xFFFF + 1,
     SUPPORT_X86_REDUCE: 0xFFFF + 2,
 
-    version: function() {
+    version: function () {
         major_ptr = MCapstone._malloc(4);
         minor_ptr = MCapstone._malloc(4);
         var ret = MCapstone.ccall('cs_version', 'number',
@@ -105,12 +105,12 @@ var cs = {
         return ret;
     },
 
-    support: function(query) {
+    support: function (query) {
         var ret = MCapstone.ccall('cs_support', 'number', ['number'], [query]);
         return ret;
     },
 
-    strerror: function(code) {
+    strerror: function (code) {
         var ret = MCapstone.ccall('cs_strerror', 'string', ['number'], [code]);
         return ret;
     },
@@ -483,6 +483,7 @@ var cs = {
         this.detail = detail;
     },
 
+
     /**
      * Capstone object
      */
@@ -492,7 +493,7 @@ var cs = {
         this.handle_ptr = MCapstone._malloc(4);
 
         // Options
-        this.option = function(option, value) {
+        this.option = function (option, value) {
             var handle = MCapstone.getValue(this.handle_ptr, '*');
             if (!handle) {
                 return;
@@ -520,8 +521,8 @@ var cs = {
             var insn_ptr_ptr = MCapstone._malloc(4);
 
             var count = MCapstone.ccall('cs_disasm', 'number',
-                ['number', 'pointer', 'number', 'bigint', 'number', 'pointer'],
-                [handle, buffer_ptr, buffer_len, addr, max || 0, insn_ptr_ptr] // Corrected arguments
+                ['number', 'pointer', 'number', 'number', 'number', 'pointer'],
+                [BigInt(handle), buffer_ptr, BigInt(buffer_len), addr, BigInt(max || 0), insn_ptr_ptr] // Corrected arguments
             );
             if (count == 0 && buffer_len != 0) {
                 MCapstone._free(insn_ptr_ptr);
@@ -536,47 +537,67 @@ var cs = {
             var insn_ptr = MCapstone.getValue(insn_ptr_ptr, 'i32');
             var insn_size = 232;
             var instructions = [];
+            var arch = this.arch;
 
             // Save instructions
-            for (var i = 0; i < count; i++) {
-                instructions.push(new cs.Instruction(insn_ptr + i * insn_size, this.arch));
-            }
+            // for (var i = 0; i < count; i++) {
+            //     instructions.push(new cs.Instruction(insn_ptr + i * insn_size, this.arch));
+            // }
 
-            var count = MCapstone.ccall('cs_free', 'void',
-                ['pointer', 'number'],
-                [insn_ptr, count]
-            );
+            // // var count = MCapstone.ccall('cs_free', 'void',
+            // //     ['pointer', 'number'],
+            // //     [insn_ptr, count]
+            // // );
 
-            MCapstone._free(insn_ptr_ptr);
-            MCapstone._free(buffer_ptr);
-            return instructions;
+            // MCapstone._free(insn_ptr_ptr);
+            // MCapstone._free(buffer_ptr);
+            return {
+                insn_ptr_ptr,
+                buffer_ptr,
+                insn_size,
+                insn_ptr,
+                count,
+                arch,
+                get(i) {
+                    return new cs.Instruction(this.insn_ptr + i * this.insn_size, this.arch)
+                },
+                dispose() {
+                    var count = MCapstone.ccall('cs_free', 'void',
+                        ['pointer', 'number'],
+                        [this.insn_ptr, this.count]
+                    );
+
+                    MCapstone._free(this.insn_ptr_ptr);
+                    MCapstone._free(this.buffer_ptr);
+                }
+            };
         };
 
-        this.reg_name = function(reg_id) {
+        this.reg_name = function (reg_id) {
             var handle = MCapstone.getValue(this.handle_ptr, '*');
             var ret = MCapstone.ccall('cs_reg_name', 'string', ['pointer', 'number'], [handle, reg_id]);
             return ret;
         }
 
-        this.insn_name = function(insn_id) {
+        this.insn_name = function (insn_id) {
             var handle = MCapstone.getValue(this.handle_ptr, '*');
             var ret = MCapstone.ccall('cs_insn_name', 'string', ['pointer', 'number'], [handle, insn_id]);
             return ret;
         }
 
-        this.group_name = function(group_id) {
+        this.group_name = function (group_id) {
             var handle = MCapstone.getValue(this.handle_ptr, '*');
             var ret = MCapstone.ccall('cs_group_name', 'string', ['pointer', 'number'], [handle, group_id]);
             return ret;
         }
 
-        this.errno = function() {
+        this.errno = function () {
             var handle = MCapstone.getValue(this.handle_ptr, '*');
             var ret = MCapstone.ccall('cs_errno', 'number', ['pointer'], [handle]);
             return ret;
         }
 
-        this.close = function() {
+        this.close = function () {
             var ret = MCapstone.ccall('cs_close', 'number', ['pointer'], [this.handle_ptr]);
             if (ret != cs.ERR_OK) {
                 var error = 'Capstone.js: Function cs_close failed with code ' + ret + ':\n' + cs.strerror(ret);

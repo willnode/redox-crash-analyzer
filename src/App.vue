@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, type Ref } from 'vue';
 import * as elfist from "@wokwi/elfist";
+// TODO: Typescript?
 import cs from "./capstone.js";
 
 // --- Configuration for the disassembly window ---
@@ -18,23 +19,29 @@ const alignDown = (number: number, alignment: number) => {
   return number - (number % alignment);
 };
 
+const bigIntMax = (args: BigInt[]) => args.reduce((m, e) => e > m ? e : m, BigInt(Number.MIN_SAFE_INTEGER));
+const bigIntMin = (args: BigInt[]) => args.reduce((m, e) => e < m ? e : m, BigInt(Number.MAX_SAFE_INTEGER));
 
 const faultLog = ref(window.sessionStorage.faultLog || '');
 const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
-const sysrootDirHandle = ref(null);
-const disassemblyOutput = ref('Enter the Page fault message and click "Start Analyze"');
-const isLoading = ref(false);
-const error = ref(null);
-const successMessage = ref(null);
+const sysrootDirHandle: Ref<string | null> = ref(null);
+const disassemblyOutput: Ref<string> = ref('Enter the Page fault message and click "Start Analyze"');
+const isLoading: Ref<boolean> = ref(false);
+const error: Ref<string | null> = ref(null);
+const successMessage: Ref<string | null> = ref(null);
 
 const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirHandle.value);
 
-const analysisData = ref(null);
+const analysisData: Ref<{
+  code: Uint8Array, symbols: elfist.ELFSymbol[], runtimeModuleOffset: BigInt,
+  runtimeSegmentStart: BigInt, runtimeTextSectionStart: BigInt, cs: any
+} | null> = ref(null);
+const instructionData: Ref<any> = ref(null);
 const jumpAddress = ref('');
 const currentSymbolName = ref('');
 
 
-const updateSymbolInfo = (targetAddrNum) => {
+const updateSymbolInfo = (targetAddrNum: number) => {
   if (!analysisData.value?.symbols) {
     currentSymbolName.value = '';
     return;
@@ -66,7 +73,7 @@ const selectDirectory = async () => {
   }
 };
 
-const findFileInDirectory = async (dirHandle, path) => {
+const findFileInDirectory = async (dirHandle: any, path: string) => {
   if (path.startsWith('lib')) {
     path = 'usr/' + path;
   }
@@ -98,33 +105,55 @@ const renderDisassemblyWindow = async (targetAddrBigInt) => {
 
   const targetOffsetInCode = Number(targetAddrBigInt - runtimeTextSectionStart);
 
+  if (instructionData.value) {
+    instructionData.value.dispose();
+    instructionData.value = null;
+  }
+
   if (targetOffsetInCode < 0 || targetOffsetInCode >= code.length) {
     throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
   }
 
-  const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
-  const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
+  // const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
+  // const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
   const instructions = cs.disasm(code, runtimeTextSectionStart);
+  instructionData.value = instructions;
 
-  const minAddr = instructions.reduce((min, x) => Math.min(min, x.address), Infinity);
-  const maxAddr = instructions.reduce((max, x) => Math.max(max, x.address), 0);
+  if (instructions.count === 0) {
+    throw new Error(`No instructions found.`);
+  }
+
+  let targetIndex = -1, minAddr = bigIntMin([]), maxAddr = bigIntMax([]);
+  for (let i = 0; i < instructions.count; i++) {
+    const inst = instructions.get(i);
+    const addr = inst.address; // BigInt
+    minAddr = bigIntMin([minAddr, addr]);
+    maxAddr = bigIntMax([maxAddr, addr]);
+    if (targetIndex == -1 && addr > targetAddrBigInt) {
+      targetIndex = i;
+    }
+  }
+
   disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
   disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
   disassemblyOutput.value += `\n looking at 0x${targetAddrNum.toString(16)}`;
 
-  const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
   if (targetIndex === -1) {
     throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
   }
 
   const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
   const endIndex = targetIndex + LINES_AFTER + 1;
-  const displayInstructions = instructions.slice(startIndex, endIndex);
+  const displayInstructions = [];
+  for (let i = startIndex; i < endIndex; i++) {
+    const inst = instructions.get(i);
+    displayInstructions.push(inst);
+  }
 
   // Format for display
   let htmlOutput = '';
   for (const insn of displayInstructions) {
-    const isTargetLine = insn.address === targetAddrNum;
+    const isTargetLine = insn.address === targetAddrBigInt;
     const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
     const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
     htmlOutput += `<span ${isTargetLine ? 'class="highlight" id="target-line"' : ''}>`;

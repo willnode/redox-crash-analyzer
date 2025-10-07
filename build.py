@@ -59,7 +59,7 @@ def generateConstants():
 def compileCapstone():
     # Clean CMake cache
     try:
-        os.remove('capstone/CMakeCache.txt')
+        os.remove('capstone_build/CMakeCache.txt')
     except OSError:
         pass
 
@@ -74,7 +74,7 @@ def compileCapstone():
     cmd += ' -DCAPSTONE_BUILD_CSTEST=Off'
     cmd += ' -DCMAKE_BUILD_TYPE=Release'
     
-    cmd += ' -DCMAKE_C_FLAGS=\"-Wno-warn-absolute-paths\"'
+    cmd += ' -DCMAKE_C_FLAGS=\"-Wno-warn-absolute-paths -sMEMORY64=1\"'
     if os.name == 'nt':
         cmd += ' -G \"MinGW Makefiles\"'
     if os.name == 'posix':
@@ -111,6 +111,8 @@ def compileCapstone():
     cmd += ' -s MODULARIZE=1'
     cmd += ' -s WASM=1'
     cmd += ' -s EXPORT_ES6="1"'
+    cmd += ' -s MEMORY64="1"'
+    cmd += ' -s WASM_BIGINT="1"'
     cmd += ' -o src/libcapstone.out.js'
     if os.system(cmd) != 0:
         print("Emscripten errored")

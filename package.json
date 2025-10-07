@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:emsdk": "cd emsdk && ./emsdk install latest",
-    "build:capstone": "EMSCRIPTEN=$PWD/emsdk/upstream/emscripten python3 build.py",
+    "build:emsdk": "cd emsdk && ./emsdk install latest && ./emsdk activate latest",
+    "build:capstone": "env EMSCRIPTEN=$PWD/emsdk/upstream/emscripten bash -c '. ./emsdk/emsdk_env.sh && python3 build.py'",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview"
   },
