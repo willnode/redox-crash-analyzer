@@ -74,7 +74,7 @@ def compileCapstone():
     cmd += ' -DCAPSTONE_BUILD_CSTEST=Off'
     cmd += ' -DCMAKE_BUILD_TYPE=Release'
     
-    cmd += ' -DCMAKE_C_FLAGS=\"-Wno-warn-absolute-paths -sMEMORY64=1\"'
+    cmd += ' -DCMAKE_C_FLAGS=\"-Wno-warn-absolute-paths\"'
     if os.name == 'nt':
         cmd += ' -G \"MinGW Makefiles\"'
     if os.name == 'posix':
@@ -109,10 +109,8 @@ def compileCapstone():
     cmd += ' -s EXPORTED_RUNTIME_METHODS=\"[\''+ '\', \''.join(methods) +'\']\"'
     cmd += ' -s ALLOW_MEMORY_GROWTH=1'
     cmd += ' -s MODULARIZE=1'
-    cmd += ' -s WASM=1'
+    cmd += ' -s WASM=0'
     cmd += ' -s EXPORT_ES6="1"'
-    cmd += ' -s MEMORY64="1"'
-    cmd += ' -s WASM_BIGINT="1"'
     cmd += ' -o src/libcapstone.out.js'
     if os.system(cmd) != 0:
         print("Emscripten errored")

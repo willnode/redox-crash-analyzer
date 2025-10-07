@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, type Ref } from 'vue';
 import * as elfist from "@wokwi/elfist";
 // TODO: Typescript?
-import cs from "./capstone.js";
+import cs, { type cs_insn } from "./ts-capstone";
 
 // --- Configuration for the disassembly window ---
 const LINES_BEFORE = 100;
@@ -34,12 +34,21 @@ const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirH
 
 const analysisData: Ref<{
   code: Uint8Array, symbols: elfist.ELFSymbol[], runtimeModuleOffset: BigInt,
-  runtimeSegmentStart: BigInt, runtimeTextSectionStart: BigInt, cs: any
+  runtimeSegmentStart: BigInt, runtimeTextSectionStart: BigInt, cs: cs.CAPSTONE
 } | null> = ref(null);
 const instructionData: Ref<any> = ref(null);
 const jumpAddress = ref('');
 const currentSymbolName = ref('');
 
+function cloneInstruction(insn: cs_insn) {
+  return {
+    address: insn.address,
+    mnemonic: insn.mnemonic,
+    op_str: insn.op_str,
+    size: insn.size,
+    bytes: insn.buffer,
+  };
+}
 
 const updateSymbolInfo = (targetAddrNum: number) => {
   if (!analysisData.value?.symbols) {
@@ -116,22 +125,49 @@ const renderDisassemblyWindow = async (targetAddrBigInt) => {
 
   // const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
   // const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
-  const instructions = cs.disasm(code, runtimeTextSectionStart);
-  instructionData.value = instructions;
 
-  if (instructions.count === 0) {
-    throw new Error(`No instructions found.`);
+  const finalInstructions = [];
+  const slidingWindow = []; // This will hold the last 100 instructions.
+  const windowSize = 100;
+
+  const insn: cs_insn = {};
+  let currentAddr = Number(runtimeSegmentStart);
+  let targetIndex = -1, minAddr = Number.MAX_SAFE_INTEGER, maxAddr = 0, iter = 0;
+  let data = {
+    addr: currentAddr,
+    buffer: code,
+    insn,
   }
+  while (cs.disasm_iter(data)) {
+    const newInstruction = cloneInstruction(data.insn);
+    const addr = newInstruction.address;
+    minAddr = Math.min(minAddr, addr);
+    maxAddr = Math.max(maxAddr, addr);
 
-  let targetIndex = -1, minAddr = bigIntMin([]), maxAddr = bigIntMax([]);
-  for (let i = 0; i < instructions.count; i++) {
-    const inst = instructions.get(i);
-    const addr = inst.address; // BigInt
-    minAddr = bigIntMin([minAddr, addr]);
-    maxAddr = bigIntMax([maxAddr, addr]);
-    if (targetIndex == -1 && addr > targetAddrBigInt) {
-      targetIndex = i;
+    if (targetIndex == -1) {
+      // Add the new instruction to our window.
+      slidingWindow.push(newInstruction);
+
+      // If the window is too big, remove the oldest instruction.
+      if (slidingWindow.length > windowSize) {
+        slidingWindow.shift();
+      }
+
+      // Check if we've found our target address.
+      if (addr >= targetAddrBigInt) {
+        targetIndex = iter;
+
+        // The target is found! The slidingWindow now contains the previous 100 instructions.
+        // Add them and the current (target) instruction to our final result.
+        finalInstructions.push(...slidingWindow);
+      }
+
+    } else {
+      if (iter - targetIndex <= windowSize) {
+        finalInstructions.push(newInstruction);
+      }
     }
+    iter++;
   }
 
   disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
@@ -142,17 +178,9 @@ const renderDisassemblyWindow = async (targetAddrBigInt) => {
     throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
   }
 
-  const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
-  const endIndex = targetIndex + LINES_AFTER + 1;
-  const displayInstructions = [];
-  for (let i = startIndex; i < endIndex; i++) {
-    const inst = instructions.get(i);
-    displayInstructions.push(inst);
-  }
-
   // Format for display
   let htmlOutput = '';
-  for (const insn of displayInstructions) {
+  for (const insn of finalInstructions) {
     const isTargetLine = insn.address === targetAddrBigInt;
     const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
     const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -330,7 +358,7 @@ const analyzeCrash = async () => {
       }
     }
 
-    if (!containingSegment) {
+    if (!containingSegment || !mmapLayout) {
       throw new Error(`RIP 0x${rip.toString(16)} does not fall within any executable PT_LOAD segment.`);
     }
     const PF_X = 1;
@@ -368,7 +396,7 @@ const analyzeCrash = async () => {
       runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
       runtimeModuleOffset,
       symbols: elf.symbols,
-      cs: new cs.Capstone(arch, mode),
+      cs: new cs.CAPSTONE(arch, mode),
     };
 
     jumpAddress.value = "0x" + rip.toString(16);
