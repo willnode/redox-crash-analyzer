@@ -324,7 +324,17 @@
 
           const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
           const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
-          const instructions = cs.disasm(code, Number(runtimeTextSectionStart));
+          let instructions = [];
+          let addd = Number(runtimeTextSectionStart);
+          while (true) {
+            var i = cs.disasm(code, addd, 100000);
+            //instructions = [...instructions, ...i]
+            instructions = i
+            addd = i.reduce((max, x) => Math.max(max, x.address), 0);
+            if (i.length !== 10000) {
+              break;
+            }
+          }
 
           const minAddr = instructions.reduce((min, x) => Math.min(min, x.address), Infinity);
           const maxAddr = instructions.reduce((max, x) => Math.max(max, x.address), 0);
