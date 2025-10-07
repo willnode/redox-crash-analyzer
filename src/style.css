@@ -1,0 +1,163 @@
+:root {
+    --bg-color: #1e1e1e;
+    --text-color: #d4d4d4;
+    --primary-color: #569cd6;
+    --input-bg: #252526;
+    --border-color: #3e3e42;
+    --error-color: #f48771;
+    --success-color: #6a9955;
+    --highlight-bg: #5a5a22;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 2em;
+}
+
+#app {
+    display: grid;
+    grid-template-columns: 40% 1fr;
+    gap: 2em;
+    height: calc(100vh - 4em);
+}
+
+.controls {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+}
+
+h1,
+h2 {
+    color: var(--primary-color);
+    margin-top: 0;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5em;
+}
+
+label {
+    font-weight: bold;
+    color: #ccc;
+}
+
+textarea,
+.dir-picker,
+input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--input-bg);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5em;
+    font-family: "Fira Code", monospace;
+}
+
+textarea {
+    resize: vertical;
+    min-height: calc(30vh - 50px);
+}
+
+.dir-picker {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.dir-picker span {
+    opacity: 0.7;
+}
+
+button {
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 0.8em 1.2em;
+    border-radius: 4px;
+    font-size: 1em;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+button:hover {
+    background-color: #408ac9;
+}
+
+button:disabled {
+    background-color: #555;
+    cursor: not-allowed;
+}
+
+.output-view {
+    display: flex;
+    flex-direction: column;
+    background: var(--input-bg);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.status {
+    padding: 1em;
+    text-align: center;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.jump-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    padding: 0.5em 1em;
+    border-bottom: 1px solid var(--border-color);
+    background: #2a2a2d;
+}
+
+.jump-input-group {
+    display: flex;
+    gap: 0.5em;
+}
+
+.symbol-info {
+    margin-top: 0.5em;
+    color: #6a9955;
+    font-family: "Fira Code", monospace;
+    font-size: 0.9em;
+}
+
+.error {
+    color: var(--error-color);
+}
+
+.success {
+    color: var(--success-color);
+}
+
+pre {
+    flex-grow: 1;
+    margin: 0;
+    padding: 1em;
+    white-space: pre;
+    overflow-x: auto;
+    font-family: "Fira Code", "Courier New", monospace;
+    color: #9cdcfe;
+}
+
+.highlight {
+    background-color: var(--highlight-bg);
+    display: block;
+}
+
+.offset {
+    color: #6a9955;
+}
+
+.bytes {
+    color: #b5cea8;
+}
+
+.mnemonic {
+    color: #c586c0;
+    font-weight: bold;
+}

@@ -1,0 +1,6 @@
+[submodule "capstone"]
+	path = capstone
+	url = https://github.com/capstone-engine/capstone
+[submodule "emsdk"]
+	path = emsdk
+	url = https://github.com/emscripten-core/emsdk.git
