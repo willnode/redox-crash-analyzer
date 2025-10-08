@@ -317,7 +317,7 @@
 
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
           if (!analysisData.value) return;
-          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart } = analysisData.value;
+          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart, file } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
           const symbol = updateSymbolInfo(targetAddrNum);
 
@@ -375,7 +375,7 @@
           }
 
           disassemblyOutput.value = htmlOutput;
-          successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)}`;
+          successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)} (${file})`;
 
           // Scroll the target line into view
           await nextTick();
@@ -422,7 +422,7 @@
 
             let lastFoundPath = null;
             const foundAtRegex = /found at '(.*?)'/;
-            const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/;
+            const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+) \(pie: (\w+)\)/;
 
             for (const line of ldLines) {
               const foundMatch = line.match(foundAtRegex);
@@ -448,7 +448,7 @@
                     path: objectPath,
                     start: BigInt(loadingMatch[2]),
                     end: BigInt(loadingMatch[3]),
-                    static: memoryMap.length == 0, // PIE false, according to relibc
+                    static: loadingMatch[4] === "false",
                   });
                 }
 
@@ -580,6 +580,7 @@
               runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
               runtimeModuleOffset,
               symbols: elf.symbols,
+              file: file.name,
               cs: new cs.Capstone(arch, mode),
             };
 
