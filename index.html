@@ -168,6 +168,33 @@
       color: #c586c0;
       font-weight: bold;
     }
+
+    #fault-stack-div {
+      display: flex;
+    }
+
+    #fault-stack-div > div {
+      flex-grow: 1;
+    }
+    .call-stack-list {
+      display: flex;
+      flex-direction: column;
+      margin: 0 5px;
+    }
+    .call-stack-list > div {
+      display: flex;
+      flex-direction: column;
+    }
+    .call-stack-list button {
+      background: inherit;
+      text-align: center;
+      border-bottom: 2px solid #a0a0a0;
+      color: gray;
+    }
+    .call-stack-list button.active {
+      color: white;
+      border-bottom: 2px solid #408ac9;
+    }
   </style>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://unpkg.com/@alexaltea/capstone-js@3.0.5/dist/capstone.min.js"></script>
@@ -178,9 +205,17 @@
   <div id="app">
     <div class="controls">
       <h1>Redox Crash Analyzer</h1>
-      <div>
-        <label for="fault-log">1. Page Fault Message</label>
-        <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
+      <div id="fault-stack-div">
+        <div>
+          <label for="fault-log">1. Page Fault Message</label>
+          <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
+        </div>
+        <div v-if="callStacks.length > 0" class="call-stack-list">
+          <label for="sysroot-dir">4. Call Stack</label>
+          <div v-for="stack in callStacks">
+            <button @click="() => jumpToStack(stack)" :class="{ active: stack == jumpAddress }">{{ stack }}</button>
+          </div>
+        </div>
       </div>
       <div>
         <label for="ld-debug-log">2. LD_DEBUG Output</label>
@@ -259,6 +294,7 @@
         const analysisData = ref(null);
         const jumpAddress = ref('');
         const currentSymbolName = ref('');
+        const callStacks = ref([]);
 
         const updateSymbolInfo = (targetAddrNum) => {
           if (!analysisData.value?.symbols) {
@@ -399,11 +435,17 @@
           }
         };
 
+        const jumpToStack = async (value) => {
+          jumpAddress.value = value;
+          await jumpToAddress();
+        };
+
         const analyzeCrash = async () => {
           isLoading.value = true;
           error.value = null;
           successMessage.value = null;
           disassemblyOutput.value = 'Starting analysis...';
+          callStacks.value = [];
 
           window.sessionStorage.faultLog = faultLog.value;
           window.sessionStorage.ldDebugLog = ldDebugLog.value;
@@ -415,6 +457,12 @@
             if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
             const rip = BigInt('0x' + ripMatch[1]);
             disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
+
+            // Find more call stack
+            callStacks.value.push('0x' + ripMatch[1]);
+            for (const stackMatch of faultLog.value.matchAll(/PC\s+([0-9a-fA-Fx]+)/g)) {
+              callStacks.value.push('0x' + stackMatch[1]);
+            }
 
             // Parse memory map from LD_DEBUG
             const memoryMap = [];
@@ -602,7 +650,11 @@
         // Cleanup Capstone instance when component is unmounted
         // onUnmounted(() => { if (analysisData.value) analysisData.value.cs.close(); });
 
-        return { faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, successMessage, isReady, analysisData, jumpAddress, currentSymbolName, selectDirectory, analyzeCrash, jumpToAddress };
+        return { 
+          faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, 
+          successMessage, isReady, analysisData, jumpAddress, currentSymbolName, callStacks, 
+          selectDirectory, analyzeCrash, jumpToAddress, jumpToStack 
+        };
       }
     }).mount('#app');
   </script>
