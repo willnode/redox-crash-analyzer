@@ -173,24 +173,28 @@
       display: flex;
     }
 
-    #fault-stack-div > div {
+    #fault-stack-div>div {
       flex-grow: 1;
     }
+
     .call-stack-list {
       display: flex;
       flex-direction: column;
       margin: 0 5px;
     }
-    .call-stack-list > div {
+
+    .call-stack-list>div {
       display: flex;
       flex-direction: column;
     }
+
     .call-stack-list button {
       background: inherit;
       text-align: center;
       border-bottom: 2px solid #a0a0a0;
       color: gray;
     }
+
     .call-stack-list button.active {
       color: white;
       border-bottom: 2px solid #408ac9;
@@ -208,7 +212,8 @@
       <div id="fault-stack-div">
         <div>
           <label for="fault-log">1. Page Fault Message</label>
-          <textarea id="fault-log" v-model="faultLog" placeholder="Paste kernel log with RIP address here..."></textarea>
+          <textarea id="fault-log" v-model="faultLog"
+            placeholder="Paste kernel log with RIP address here..."></textarea>
         </div>
         <div v-if="callStacks.length > 0" class="call-stack-list">
           <label for="sysroot-dir">4. Call Stack</label>
@@ -248,6 +253,7 @@
           <button @click="jumpToAddress">Jump</button>
         </div>
         <div class="symbol-info" v-if="currentSymbolName">{{ currentSymbolName }}</div>
+        <div class="symbol-info" v-if="currentSymbolName2">{{ currentSymbolName2 }}</div>
       </div>
 
       <pre v-html="disassemblyOutput"></pre>
@@ -294,14 +300,16 @@
         const analysisData = ref(null);
         const jumpAddress = ref('');
         const currentSymbolName = ref('');
+        const currentSymbolName2 = ref('');
         const callStacks = ref([]);
 
         const updateSymbolInfo = (targetAddrNum) => {
           if (!analysisData.value?.symbols) {
             currentSymbolName.value = '';
+            currentSymbolName2.value = '';
             return;
           }
-          const { symbols, runtimeModuleOffset } = analysisData.value;
+          const { symbols, runtimeModuleOffset, file } = analysisData.value;
 
           for (const sym of symbols) {
             if (!sym.value || !sym.size) continue; // skip broken
@@ -312,10 +320,12 @@
             if (targetAddrNum >= symStart && targetAddrNum < symEnd) {
               const offset = targetAddrNum - symStart;
               currentSymbolName.value = `Symbol: ${sym.name} (0x${symStart.toString(16)}:0x${symEnd.toString(16)}) +0x${offset.toString(16)}`;
+              currentSymbolName2.value = `gdb -batch -ex 'file ${file.name}' -ex 'disassemble 0x${symStart.toString(16)}, 0x${symEnd.toString(16)}'`;
               return { start: symStart, end: symEnd, size: sym.size };
             }
           }
           currentSymbolName.value = 'Symbol: <not found in table>';
+          currentSymbolName.value2 = '';
         };
 
         const selectDirectory = async () => {
@@ -351,9 +361,180 @@
           }
         };
 
+        /** @param {BigInteger} targetAddrBigInt  */
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
+          // Parse memory map from LD_DEBUG
+          const rip = targetAddrBigInt;
+          const memoryMap = [];
+          const ldLines = ldDebugLog.value.split('\n');
+
+          let lastFoundPath = null;
+          const foundAtRegex = /found at '(.*?)'/;
+          const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+) \(pie: (\w+)\)/;
+
+          for (const line of ldLines) {
+            const foundMatch = line.match(foundAtRegex);
+            if (foundMatch) {
+              // Remember the full path when we see "found at..."
+              lastFoundPath = foundMatch[1];
+              continue; // This line is processed, move to the next
+            }
+
+            const loadingMatch = line.match(loadingObjectRegex);
+            if (loadingMatch) {
+              let objectPath = loadingMatch[1].split("'").join("").trim();
+
+              // If the path from "loading object:" is not absolute (i.e., it's a short name),
+              // then we must use the full path we remembered from the previous line.
+              if (!objectPath.startsWith('/') && lastFoundPath) {
+                objectPath = lastFoundPath;
+              }
+
+              // Only add to the map if we have a valid path
+              if (objectPath) {
+                memoryMap.push({
+                  path: objectPath,
+                  start: BigInt(loadingMatch[2]),
+                  end: BigInt(loadingMatch[3]),
+                  static: loadingMatch[4] === "false",
+                });
+              }
+
+              // Reset the remembered path so it's not accidentally reused.
+              lastFoundPath = null;
+            }
+          }
+
+          let staticBinary = false;
+          if (memoryMap.length === 0) {
+            // assume this is static binary
+            const nameRegex = /NAME ([\w\/\-]+)/;
+            const nameFound = faultLog.value.match(nameRegex);
+            if (nameFound) {
+              const objectPath = nameFound[1];
+              memoryMap.push({
+                path: objectPath,
+                start: BigInt(0),
+                end: rip, // don't bother getting a correct value
+                static: true,
+              });
+              staticBinary = true;
+            }
+          }
+
+          if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
+          disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
+
+          // Find the faulting module
+          const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
+          if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.\n The code maybe loaded from mmap in the application.`);
+          disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
+
+          // Calculate offset
+          const runtimeModuleOffset = faultingModule.start * BigInt(faultingModule.static ? 0 : 1); // non PIE object don't remap start offset, according to relibc
+          const ripOffset = rip - runtimeModuleOffset;
+          disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
+          if (faultingModule.static) {
+            disassemblyOutput.value += " (unchanged because it's not PIE)";
+          }
+
+          // Find the file in the selected sysroot directory
+          let pathModule = (faultingModule.path + '').replace(/^\//, ''); // Remove leading '/'
+
+          disassemblyOutput.value += `\nSearching for ${pathModule} in sysroot...`;
+          const fileHandle = await findFileInDirectory(sysrootDirHandle.value, pathModule);
+          const file = await fileHandle.getFile();
+          disassemblyOutput.value += `\nFound file: ${file.name}`;
+
+          // Read and disassemble the file using elfist
+          const arrayBuffer = await file.arrayBuffer();
+          const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
+
+          // get ALL PT_LOAD segments
+          const executableSegments = elf.program.filter(ph => ph.type === 1);
+
+          if (executableSegments.length === 0) {
+            throw new Error("Could not find any executable PT_LOAD segments in the ELF file.");
+          }
+
+          let mmapLayout = null, containingSegment = null;
+          for (const segment of executableSegments) {
+            let { align, vaddr, memsz, offset } = segment;
+            // offset is usually zero on Redox GCC
+            offset = alignDown(offset, align);
+            memsz = alignUp(memsz + vaddr % align, align);
+            vaddr = alignDown(vaddr, align);
+
+            disassemblyOutput.value += `\nLoaded code ${vaddr.toString(16)}-${(vaddr + memsz).toString(16)}`;
+            if (ripOffset >= vaddr && ripOffset < vaddr + memsz) {
+              containingSegment = segment;
+              disassemblyOutput.value += ` and selected`;
+            }
+            if (mmapLayout == null) {
+              mmapLayout = { vaddr, memsz, offset };
+            } else {
+              if (vaddr + memsz > mmapLayout.vaddr + mmapLayout.memsz) {
+                mmapLayout.memsz = vaddr + memsz - mmapLayout.vaddr;
+              }
+              if (offset + memsz > mmapLayout.offset + mmapLayout.memsz) {
+                mmapLayout.memsz = offset + memsz - mmapLayout.offset;
+              }
+              if (vaddr < mmapLayout.vaddr) {
+                mmapLayout.memsz -= mmapLayout.vaddr - vaddr;
+                mmapLayout.vaddr = vaddr;
+              }
+              if (offset < mmapLayout.offset) {
+                mmapLayout.memsz -= mmapLayout.offset - offset;
+                mmapLayout.offset = offset;
+              }
+            }
+          }
+
+          if (!containingSegment) {
+            throw new Error(`RIP 0x${rip.toString(16)} does not fall within any executable PT_LOAD segment.`);
+          }
+          const PF_X = 1;
+          if (!(containingSegment.flags & PF_X)) {
+            // For now, we'll throw an error, as we are set up to disassemble code.
+            // This could be expanded later to show a hex dump of the data instead.
+            throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}).\n This indicates a data access fault, not an instruction fetch fault.`);
+          }
+          const moduleSize = Number(faultingModule.end - faultingModule.start);
+          if (!staticBinary && mmapLayout.memsz != moduleSize) {
+            throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. \n Relibc load strategy may have changed.`);
+          }
+
+          let arch, mode;
+          if (elf.header.machine === 62) { // EM_X86_64
+            arch = cs.ARCH_X86; mode = cs.MODE_64;
+          } else if (elf.header.machine === 183) { // EM_AARCH64
+            arch = cs.ARCH_ARM64; mode = cs.MODE_ARM;
+          } else {
+            throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
+          }
+          const textSection = elf.sections.find(s => s.name === '.text');
+          if (!textSection) {
+            throw new Error("Could not find the .text section in the ELF file.");
+          }
+          const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
+
+          // Useful for diagnostics
+          console.log(window.elf = elf);
+
+          // Store context for later use (jumping)
+          analysisData.value = {
+            runtimeSegmentStart: runtimeModuleOffset + BigInt(mmapLayout.vaddr),
+            runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
+            runtimeModuleOffset,
+            symbols: elf.symbols,
+            file: file,
+            csInst: new cs.Capstone(arch, mode),
+          };
+
+          jumpAddress.value = "0x" + rip.toString(16);
+
           if (!analysisData.value) return;
-          const { code, cs, runtimeSegmentStart, runtimeTextSectionStart, file } = analysisData.value;
+          const { csInst, runtimeSegmentStart, runtimeTextSectionStart } = analysisData.value;
           const targetAddrNum = Number(targetAddrBigInt);
           const symbol = updateSymbolInfo(targetAddrNum);
 
@@ -369,8 +550,10 @@
           const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
           let instructions = [];
           let addd = symbol?.start || Number(runtimeTextSectionStart);
+          let codeChunked = code.slice(addd - chunkVirtualAddr);
+          // console.log("add: ", addd, chunkVirtualAddr, code.length, codeChunked);
           while (true) {
-            var i = cs.disasm(code, addd, Math.min(symbol?.size || Number.MAX_SAFE_INTEGER, 1000000));
+            var i = csInst.disasm(codeChunked, addd, Math.min(symbol?.size || Number.MAX_SAFE_INTEGER, 1000000));
             //instructions = [...instructions, ...i]
             instructions = i
             addd = i[i.length - 1].address;
@@ -464,176 +647,6 @@
               callStacks.value.push('0x' + stackMatch[1]);
             }
 
-            // Parse memory map from LD_DEBUG
-            const memoryMap = [];
-            const ldLines = ldDebugLog.value.split('\n');
-
-            let lastFoundPath = null;
-            const foundAtRegex = /found at '(.*?)'/;
-            const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+) \(pie: (\w+)\)/;
-
-            for (const line of ldLines) {
-              const foundMatch = line.match(foundAtRegex);
-              if (foundMatch) {
-                // Remember the full path when we see "found at..."
-                lastFoundPath = foundMatch[1];
-                continue; // This line is processed, move to the next
-              }
-
-              const loadingMatch = line.match(loadingObjectRegex);
-              if (loadingMatch) {
-                let objectPath = loadingMatch[1].split("'").join("").trim();
-
-                // If the path from "loading object:" is not absolute (i.e., it's a short name),
-                // then we must use the full path we remembered from the previous line.
-                if (!objectPath.startsWith('/') && lastFoundPath) {
-                  objectPath = lastFoundPath;
-                }
-
-                // Only add to the map if we have a valid path
-                if (objectPath) {
-                  memoryMap.push({
-                    path: objectPath,
-                    start: BigInt(loadingMatch[2]),
-                    end: BigInt(loadingMatch[3]),
-                    static: loadingMatch[4] === "false",
-                  });
-                }
-
-                // Reset the remembered path so it's not accidentally reused.
-                lastFoundPath = null;
-              }
-            }
-
-            let staticBinary = false;
-            if (memoryMap.length === 0) {
-              // assume this is static binary
-              const nameRegex = /NAME ([\w\/\-]+)/;
-              const nameFound = faultLog.value.match(nameRegex);
-              if (nameFound) {
-                const objectPath = nameFound[1];
-                memoryMap.push({
-                  path: objectPath,
-                  start: BigInt(0),
-                  end: rip, // don't bother getting a correct value
-                  static: true,
-                });
-                staticBinary = true;
-              }
-            }
-
-            if (memoryMap.length === 0) throw new Error("Could not parse any loaded objects from LD_DEBUG output.");
-            disassemblyOutput.value += `\nParsed ${memoryMap.length} loaded objects.`;
-
-            // Find the faulting module
-            const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
-            if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.\n The code maybe loaded from mmap in the application.`);
-            disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
-
-            // Calculate offset
-            const runtimeModuleOffset = faultingModule.start * BigInt(faultingModule.static ? 0 : 1); // non PIE object don't remap start offset, according to relibc
-            const ripOffset = rip - runtimeModuleOffset;
-            disassemblyOutput.value += `\nCalculated offset: 0x${ripOffset.toString(16)}`;
-            if (faultingModule.static) {
-              disassemblyOutput.value += " (unchanged because it's not PIE)";
-            }
-
-            // Find the file in the selected sysroot directory
-            let pathModule = (faultingModule.path + '').replace(/^\//, ''); // Remove leading '/'
-
-            disassemblyOutput.value += `\nSearching for ${pathModule} in sysroot...`;
-            const fileHandle = await findFileInDirectory(sysrootDirHandle.value, pathModule);
-            const file = await fileHandle.getFile();
-            disassemblyOutput.value += `\nFound file: ${file.name}`;
-
-            // Read and disassemble the file using elfist
-            const arrayBuffer = await file.arrayBuffer();
-            const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
-
-            // get ALL PT_LOAD segments
-            const executableSegments = elf.program.filter(ph => ph.type === 1);
-
-            if (executableSegments.length === 0) {
-              throw new Error("Could not find any executable PT_LOAD segments in the ELF file.");
-            }
-
-            let mmapLayout = null, containingSegment = null;
-            for (const segment of executableSegments) {
-              let { align, vaddr, memsz, offset } = segment;
-              // offset is usually zero on Redox GCC
-              offset = alignDown(offset, align);
-              memsz = alignUp(memsz + vaddr % align, align);
-              vaddr = alignDown(vaddr, align);
-
-              disassemblyOutput.value += `\nLoaded code ${vaddr.toString(16)}-${(vaddr + memsz).toString(16)}`;
-              if (ripOffset >= vaddr && ripOffset < vaddr + memsz) {
-                containingSegment = segment;
-                disassemblyOutput.value += ` and selected`;
-              }
-              if (mmapLayout == null) {
-                mmapLayout = { vaddr, memsz, offset };
-              } else {
-                if (vaddr + memsz > mmapLayout.vaddr + mmapLayout.memsz) {
-                  mmapLayout.memsz = vaddr + memsz - mmapLayout.vaddr;
-                }
-                if (offset + memsz > mmapLayout.offset + mmapLayout.memsz) {
-                  mmapLayout.memsz = offset + memsz - mmapLayout.offset;
-                }
-                if (vaddr < mmapLayout.vaddr) {
-                  mmapLayout.memsz -= mmapLayout.vaddr - vaddr;
-                  mmapLayout.vaddr = vaddr;
-                }
-                if (offset < mmapLayout.offset) {
-                  mmapLayout.memsz -= mmapLayout.offset - offset;
-                  mmapLayout.offset = offset;
-                }
-              }
-            }
-
-            if (!containingSegment) {
-              throw new Error(`RIP 0x${rip.toString(16)} does not fall within any executable PT_LOAD segment.`);
-            }
-            const PF_X = 1;
-            if (!(containingSegment.flags & PF_X)) {
-              // For now, we'll throw an error, as we are set up to disassemble code.
-              // This could be expanded later to show a hex dump of the data instead.
-              throw new Error(`RIP 0x${rip.toString(16)} is in a non-executable segment (flags: ${containingSegment.flags}).\n This indicates a data access fault, not an instruction fetch fault.`);
-            }
-            const moduleSize = Number(faultingModule.end - faultingModule.start);
-            if (!staticBinary && mmapLayout.memsz != moduleSize) {
-              throw new Error(`Mmap size ${mmapLayout.memsz.toString(16)} is different than module size ${moduleSize.toString(16)}. \n Relibc load strategy may have changed.`);
-            }
-
-            let arch, mode;
-            if (elf.header.machine === 62) { // EM_X86_64
-              arch = cs.ARCH_X86; mode = cs.MODE_64;
-            } else if (elf.header.machine === 183) { // EM_AARCH64
-              arch = cs.ARCH_ARM64; mode = cs.MODE_ARM;
-            } else {
-              throw new Error(`Unsupported machine architecture: ${elf.header.machine}`);
-            }
-            const textSection = elf.sections.find(s => s.name === '.text');
-            if (!textSection) {
-              throw new Error("Could not find the .text section in the ELF file.");
-            }
-            const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
-
-            // Useful for diagnostics
-            console.log(window.elf = elf);
-
-            // Store context for later use (jumping)
-            analysisData.value = {
-              code,
-              runtimeSegmentStart: runtimeModuleOffset + BigInt(mmapLayout.vaddr),
-              runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
-              runtimeModuleOffset,
-              symbols: elf.symbols,
-              file: file.name,
-              cs: new cs.Capstone(arch, mode),
-            };
-
-            jumpAddress.value = "0x" + rip.toString(16);
-
             // Perform the initial render around the RIP
             await renderDisassemblyWindow(rip);
 
@@ -650,10 +663,10 @@
         // Cleanup Capstone instance when component is unmounted
         // onUnmounted(() => { if (analysisData.value) analysisData.value.cs.close(); });
 
-        return { 
-          faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error, 
-          successMessage, isReady, analysisData, jumpAddress, currentSymbolName, callStacks, 
-          selectDirectory, analyzeCrash, jumpToAddress, jumpToStack 
+        return {
+          faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error,
+          successMessage, isReady, analysisData, jumpAddress, currentSymbolName, currentSymbolName2, callStacks,
+          selectDirectory, analyzeCrash, jumpToAddress, jumpToStack
         };
       }
     }).mount('#app');
