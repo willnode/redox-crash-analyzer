@@ -303,13 +303,13 @@
         const currentSymbolName2 = ref('');
         const callStacks = ref([]);
 
-        const updateSymbolInfo = (targetAddrNum) => {
+        const updateSymbolInfo = (ripNum) => {
           if (!analysisData.value?.symbols) {
             currentSymbolName.value = '';
             currentSymbolName2.value = '';
             return;
           }
-          const { symbols, runtimeModuleOffset, file } = analysisData.value;
+          const { symbols, runtimeModuleOffset, pathModule } = analysisData.value;
 
           for (const sym of symbols) {
             if (!sym.value || !sym.size) continue; // skip broken
@@ -317,10 +317,10 @@
             const symStart = Number(runtimeModuleOffset) + sym.value;
             const symEnd = symStart + sym.size;
 
-            if (targetAddrNum >= symStart && targetAddrNum < symEnd) {
-              const offset = targetAddrNum - symStart;
+            if (ripNum >= symStart && ripNum < symEnd) {
+              const offset = ripNum - symStart;
               currentSymbolName.value = `Symbol: ${sym.name} (0x${symStart.toString(16)}:0x${symEnd.toString(16)}) +0x${offset.toString(16)}`;
-              currentSymbolName2.value = `gdb -batch -ex 'file ${file.name}' -ex 'disassemble 0x${symStart.toString(16)}, 0x${symEnd.toString(16)}'`;
+              currentSymbolName2.value = `gdb -batch -ex 'file ${pathModule}' -ex 'disassemble 0x${symStart.toString(16)}, 0x${symEnd.toString(16)}'`;
               return { start: symStart, end: symEnd, size: sym.size };
             }
           }
@@ -365,6 +365,7 @@
         const renderDisassemblyWindow = async (targetAddrBigInt) => {
           // Parse memory map from LD_DEBUG
           const rip = targetAddrBigInt;
+          const ripNum = Number(targetAddrBigInt);
           const memoryMap = [];
           const ldLines = ldDebugLog.value.split('\n');
 
@@ -521,13 +522,13 @@
           // Useful for diagnostics
           console.log(window.elf = elf);
 
-          // Store context for later use (jumping)
           analysisData.value = {
             runtimeSegmentStart: runtimeModuleOffset + BigInt(mmapLayout.vaddr),
             runtimeTextSectionStart: runtimeModuleOffset + BigInt(textSection.addr),
             runtimeModuleOffset,
             symbols: elf.symbols,
             file: file,
+            pathModule,
             csInst: new cs.Capstone(arch, mode),
           };
 
@@ -535,15 +536,14 @@
 
           if (!analysisData.value) return;
           const { csInst, runtimeSegmentStart, runtimeTextSectionStart } = analysisData.value;
-          const targetAddrNum = Number(targetAddrBigInt);
-          const symbol = updateSymbolInfo(targetAddrNum);
+          const symbol = updateSymbolInfo(ripNum);
 
-          successMessage.value = `Rendering view around 0x${targetAddrNum.toString(16)}...`;
+          successMessage.value = `Rendering view around 0x${ripNum.toString(16)}...`;
 
           const targetOffsetInCode = Number(targetAddrBigInt - runtimeTextSectionStart);
 
           if (targetOffsetInCode < 0 || targetOffsetInCode >= code.length) {
-            throw new Error(`Address 0x${targetAddrNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
+            throw new Error(`Address 0x${ripNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
           }
 
           const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
@@ -557,11 +557,11 @@
             //instructions = [...instructions, ...i]
             instructions = i
             addd = i[i.length - 1].address;
-            if (i.length !== 1000000 || addd >= targetAddrNum) {
+            if (i.length !== 1000000 || addd >= ripNum) {
               break;
             }
 
-            const line = `\n  Seeking 0x${addd.toString(16)} ${Math.trunc((addd - Number(runtimeTextSectionStart)) / (targetAddrNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
+            const line = `\n  Seeking 0x${addd.toString(16)} ${Math.trunc((addd - Number(runtimeTextSectionStart)) / (ripNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
             console.log(line);
             disassemblyOutput.value += line;
             await waitForNextFrame();
@@ -571,11 +571,11 @@
           const maxAddr = instructions[instructions.length - 1].address;
           disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
           disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
-          disassemblyOutput.value += `\n looking at 0x${targetAddrNum.toString(16)}`;
+          disassemblyOutput.value += `\n looking at 0x${ripNum.toString(16)}`;
 
-          const targetIndex = instructions.findIndex(insn => insn.address >= targetAddrNum);
+          const targetIndex = instructions.findIndex(insn => insn.address >= ripNum);
           if (targetIndex === -1) {
-            throw new Error(`Could not locate instruction at or after 0x${targetAddrNum.toString(16)}.`);
+            throw new Error(`Could not locate instruction at or after 0x${ripNum.toString(16)}.`);
           }
 
           const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
@@ -585,7 +585,7 @@
           // Format for display
           let htmlOutput = '';
           for (const insn of displayInstructions) {
-            const isTargetLine = insn.address === targetAddrNum;
+            const isTargetLine = insn.address === ripNum;
             const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
             const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
             htmlOutput += `<span ${isTargetLine ? 'class="highlight" id="target-line"' : ''}>`;
@@ -594,7 +594,7 @@
           }
 
           disassemblyOutput.value = htmlOutput;
-          successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${targetAddrNum.toString(16)} (${file})`;
+          successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${ripNum.toString(16)} (${file.name})`;
 
           // Scroll the target line into view
           await nextTick();
