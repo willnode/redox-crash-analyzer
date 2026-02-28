@@ -1,4 +1,4 @@
-<img width="3380" height="1864" alt="image" src="https://github.com/user-attachments/assets/5722bb97-fd8d-40ed-8fdc-36c9b9b8477d" /># Redox OS Crash Analyzer
+# Redox OS Crash Analyzer
 
 This website conveniently extract assembly and function out of a kernel stack trace. Currently the website only support Chromium-based browsers for looking into mounted sysroot. 
 
