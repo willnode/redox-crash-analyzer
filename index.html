@@ -171,9 +171,16 @@
 
     #fault-stack-div {
       display: flex;
+      max-height: 45vh;
     }
 
     #fault-stack-div>div {
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #fault-log {
       flex-grow: 1;
     }
 
@@ -181,6 +188,8 @@
       display: flex;
       flex-direction: column;
       margin: 0 5px;
+      overflow: auto;
+      max-height: 100%;
     }
 
     .call-stack-list>div {
@@ -215,10 +224,12 @@
           <textarea id="fault-log" v-model="faultLog"
             placeholder="Paste kernel log with RIP address here..."></textarea>
         </div>
-        <div v-if="callStacks.length > 0" class="call-stack-list">
+        <div v-if="callStacks.length > 0" class="call-stack">
           <label for="sysroot-dir">4. Call Stack</label>
-          <div v-for="stack in callStacks">
-            <button @click="() => jumpToStack(stack)" :class="{ active: stack == jumpAddress }">{{ stack }}</button>
+          <div class="call-stack-list">
+            <div v-for="stack in callStacks">
+              <button @click="() => jumpToStack(stack)" :class="{ active: stack == jumpAddress }">{{ stack }}</button>
+            </div>
           </div>
         </div>
       </div>
@@ -290,7 +301,7 @@
         const faultLog = ref(window.sessionStorage.faultLog || '');
         const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
         const sysrootDirHandle = ref(null);
-        const disassemblyOutput = ref('Enter the Page fault message and click "Start Analyze"');
+        const disassemblyOutput = ref('Enter the Page fault message and click "Analyze Crash"');
         const isLoading = ref(false);
         const error = ref(null);
         const successMessage = ref(null);
@@ -341,6 +352,15 @@
         const findFileInDirectory = async (dirHandle, path) => {
           if (path.startsWith('lib')) {
             path = 'usr/' + path;
+          }
+          if (path == 'usr/lib/libc.so.6') {
+            path = 'usr/lib/libc.so';
+          }
+          if (path == 'usr/bin/env') {
+            path = 'usr/bin/coreutils';
+          }
+          if (path == 'usr/bin/sh') {
+            path = 'usr/bin/bash';
           }
           const parts = path.split('/').filter(p => p && p !== '.');
           let currentHandle = dirHandle;
@@ -428,7 +448,7 @@
 
           // Find the faulting module
           const faultingModule = memoryMap.find(m => rip >= m.start && rip <= m.end);
-          if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.\n The code maybe loaded from mmap in the application.`);
+          if (!faultingModule) throw new Error(`Could not find a module containing the RIP address 0x${rip.toString(16)}.\n The code maybe generated in the application.`);
           disassemblyOutput.value += `\nRIP is inside module: ${faultingModule.path}`;
 
           // Calculate offset
@@ -625,11 +645,14 @@
         };
 
         const jumpToAddress = async () => {
-          if (!jumpAddress.value || !analysisData.value) return;
+          if (!jumpAddress.value) return;
           try {
             isLoading.value = true;
             error.value = null;
             const targetAddr = BigInt("0x" + jumpAddress.value.replace('0x', ''));
+            disassemblyOutput.value = '';
+            currentSymbolName.value = '';
+            currentSymbolName2.value = '';
             await renderDisassemblyWindow(targetAddr);
           } catch (e) {
             error.value = e.message;
