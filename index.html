@@ -660,11 +660,10 @@
             if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
             const rip = BigInt('0x' + ripMatch[2]);
             disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
-
             // Find more call stack
-            callStacks.value.push('0x' + ripMatch[2]);
+            callStacks.value.push('0x' + ripMatch[2].toLowerCase().replace(/^[0\.]+/, ""));
             for (const stackMatch of faultLog.value.matchAll(/PC\s+([0-9a-fA-Fx]+)/g)) {
-              callStacks.value.push('0x' + stackMatch[1]);
+              callStacks.value.push('0x' + stackMatch[1].replace(/^[0\.]+/, ""));
             }
 
             // Perform the initial render around the RIP
