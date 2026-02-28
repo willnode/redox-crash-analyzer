@@ -599,7 +599,7 @@
               break;
             }
 
-            const line = `\n  Seeking 0x${addd.toString(16)} ${Math.trunc((addd - Number(runtimeTextSectionStart)) / (ripNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
+            const line = `\n  Seeking 0x${currentAddr.toString(16)} ${Math.trunc((currentAddr - Number(runtimeTextSectionStart)) / (ripNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
             console.log(line);
             disassemblyOutput.value += line;
             await waitForNextFrame();
@@ -611,7 +611,22 @@
           disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
           disassemblyOutput.value += `\n looking at 0x${ripNum.toString(16)}`;
 
-          const targetIndex = instructions.findIndex(insn => insn.address >= ripNum);
+          const isStackReturnAddr = callStacks.value.slice(1).some(addr => 
+            BigInt(addr) === targetAddrBigInt
+          );
+          let targetIndex = instructions.findIndex(insn => insn.address >= ripNum);
+          if (targetIndex === -1) {
+            throw new Error(`Could not locate instruction at or after 0x${ripNum.toString(16)}.`);
+          }
+
+          // Could be a return address, which should highlight previous instruction
+          if (isStackReturnAddr && targetIndex > 0) {
+              targetIndex = targetIndex - 1;
+              var effectiveHighlightAddr = instructions[targetIndex].address;
+          } else {
+              var effectiveHighlightAddr = ripNum;
+          }
+
           if (targetIndex === -1) {
             throw new Error(`Could not locate instruction at or after 0x${ripNum.toString(16)}.`);
           }
@@ -623,7 +638,7 @@
           // Format for display
           let htmlOutput = '';
           for (const insn of displayInstructions) {
-            const isTargetLine = insn.address === ripNum;
+            const isTargetLine = insn.address === effectiveHighlightAddr;
             const offsetStr = `0x${insn.address.toString(16).padStart(8, '0')}`;
             const bytesStr = insn.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
             htmlOutput += `<span ${isTargetLine ? 'class="highlight" id="target-line"' : ''}>`;
