@@ -295,7 +295,7 @@
         const error = ref(null);
         const successMessage = ref(null);
 
-        const isReady = computed(() => faultLog.value && ldDebugLog.value && sysrootDirHandle.value);
+        const isReady = computed(() => faultLog.value && sysrootDirHandle.value);
 
         const analysisData = ref(null);
         const jumpAddress = ref('');
@@ -636,13 +636,13 @@
 
           try {
             // Parse RIP from fault log
-            const ripMatch = faultLog.value.match(/RIP:\s+([0-9a-fA-Fx]+)/);
+            const ripMatch = faultLog.value.match(/(RIP|ELR_EL1):\s+([0-9a-fA-Fx]+)/);
             if (!ripMatch) throw new Error("Could not find RIP address in the page fault message.");
-            const rip = BigInt('0x' + ripMatch[1]);
+            const rip = BigInt('0x' + ripMatch[2]);
             disassemblyOutput.value += `\nFound RIP: 0x${rip.toString(16)}`;
 
             // Find more call stack
-            callStacks.value.push('0x' + ripMatch[1]);
+            callStacks.value.push('0x' + ripMatch[2]);
             for (const stackMatch of faultLog.value.matchAll(/PC\s+([0-9a-fA-Fx]+)/g)) {
               callStacks.value.push('0x' + stackMatch[1]);
             }
