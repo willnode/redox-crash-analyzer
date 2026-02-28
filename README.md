@@ -1,4 +1,4 @@
-## Redox OS Crash Analyzer
+<img width="3380" height="1864" alt="image" src="https://github.com/user-attachments/assets/5722bb97-fd8d-40ed-8fdc-36c9b9b8477d" /># Redox OS Crash Analyzer
 
 This website conveniently extract assembly and function out of a kernel stack trace. Currently the website only support Chromium-based browsers for looking into mounted sysroot. 
 
@@ -15,6 +15,13 @@ Here's how to extract useful data out of panic stack trace when you run Redox OS
 7. You can examine it yourself, if you can't see some files due to symlink issue (because the browser doesn't let us resolve symlinks), you might want to fix that and rerun the `Analyze Crash`.
 8. Press `Full Stack Report` to generate full stack info that can be copied.
 
-# LICENSE
+## Preview
+
+<img width="3380" height="1864" alt="image(6)" src="https://github.com/user-attachments/assets/82ca0bfa-6074-4cfa-9284-d45ad1d5fe91" />
+
+<img width="3038" height="1830" alt="image(7)" src="https://github.com/user-attachments/assets/ebc7db90-a13e-4fe6-b6d6-4bdfa9d4dce9" />
+
+
+## LICENSE
 
 MIT
