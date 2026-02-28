@@ -549,15 +549,33 @@
           const startOffsetInData = Math.max(0, targetOffsetInCode - CONTEXT_BYTES);
           const chunkVirtualAddr = Number(runtimeSegmentStart) + startOffsetInData;
           let instructions = [];
-          let addd = symbol?.start || Number(runtimeTextSectionStart);
-          let codeChunked = code.slice(addd - chunkVirtualAddr);
-          // console.log("add: ", addd, chunkVirtualAddr, code.length, codeChunked);
+          let currentAddr = symbol?.start || (ripNum - 500);
+          const endAddr = symbol?.end || (ripNum + 500);
+          let offsetInTextSection = currentAddr - Number(runtimeTextSectionStart);
+          let codeChunked = code.slice(offsetInTextSection);
           while (true) {
-            var i = csInst.disasm(codeChunked, addd, Math.min(symbol?.size || Number.MAX_SAFE_INTEGER, 1000000));
-            //instructions = [...instructions, ...i]
-            instructions = i
-            addd = i[i.length - 1].address;
-            if (i.length !== 1000000 || addd >= ripNum) {
+            const safeOffset = Math.max(0, offsetInTextSection);
+            const codeChunked = code.slice(safeOffset);
+
+            let i = csInst.disasm(codeChunked, currentAddr, 1000);
+
+            if (!i || i.length === 0) break;
+
+            for (const insn of i) {
+              if (insn.address < endAddr) {
+                instructions.push(insn);
+                currentAddr = insn.address + insn.size;
+              } else {
+                currentAddr = endAddr;
+                break;
+              }
+            }
+
+            const lastInsn = i[i.length - 1];
+            currentAddr = lastInsn.address + lastInsn.size;
+
+            offsetInTextSection = currentAddr - Number(runtimeTextSectionStart);
+            if (currentAddr >= ripNum || instructions.length > 5000) {
               break;
             }
 
@@ -595,7 +613,9 @@
 
           disassemblyOutput.value = htmlOutput;
           successMessage.value = `Showing ${displayInstructions.length} instructions around 0x${ripNum.toString(16)} (${file.name})`;
-
+          if (elf.symbols.length == 0) {
+            successMessage.value += " <Symbol stripped!>";
+          }
           // Scroll the target line into view
           await nextTick();
           const targetLine = document.getElementById('target-line');
