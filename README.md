@@ -13,4 +13,4 @@ Here's how to extract useful data out of panic stack trace when you run Redox OS
 5. Open the crash analyzer, paste the crash log and LD_DEBUG output.
 6. Open the mounted folder in `Select Sysroot`, then press `Analyze Crash`.
 7. You can examine it yourself, if you can't see some files due to symlink issue (because the browser doesn't let us resolve symlinks), you might want to fix that and rerun the `Analyze Crash`.
-8. Press `Generate Report` to generate useful info.
+8. Press `Full Stack Report` to generate full stack info that can be copied.

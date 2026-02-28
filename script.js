@@ -54,6 +54,220 @@ const findFileInDirectory = async (dirHandle, path) => {
   }
 };
 
+export const analyzeCrashCause = (log) => {
+  let summary = "Unknown Exception";
+  let detail = "";
+
+  // AArch64 error from parsing ESR
+  const esrMatch = log.match(/ESR_EL1:\s+([0-9a-fA-Fx]+)/);
+  const farMatch = log.match(/FAR_EL1:\s+([0-9a-fA-Fx]+)/);
+
+  if (esrMatch) {
+    const esr = parseInt(esrMatch[1], 16);
+    const ec = (esr >> 26) & 0x3F; // Exception Class
+    const iss = esr & 0x1FFFFFF;  // Instruction Specific Syndrome
+
+    const aarch64EC = {
+      0x00: "Unknown Reason",
+      0x01: "Trapped WFI or WFE instruction",
+      0x0E: "Illegal Execution State",
+      0x20: "Instruction Abort (Lower EL)",
+      0x21: "Instruction Abort (Same EL)",
+      0x22: "PC Alignment Fault",
+      0x24: "Data Abort (Lower EL)",
+      0x25: "Data Abort (Same EL)",
+      0x26: "Stack Alignment Fault",
+      0x3C: "Breakpoint (BKPT/Software Step)"
+    };
+
+    summary = `AArch64 Exception: ${aarch64EC[ec] || `EC 0x${ec.toString(16)}`}`;
+
+    // Decode Data Abort Details
+    if (ec === 0x24 || ec === 0x25) {
+      const isWrite = (iss >> 6) & 1;
+      detail = `Type: ${isWrite ? 'Write' : 'Read'} Access Violation`;
+    }
+
+    if (farMatch) {
+      const far = farMatch[1];
+      detail += ` | Faulting Address (FAR): ${far}`;
+      if (parseInt(far, 16) === 0) detail += " (Null Pointer Dereference)";
+    }
+
+    return { summary, detail };
+  }
+
+  // x86_64 error strings, coming from kernel code
+  const x86Exceptions = [
+    { msg: "Divide by zero", kind: 0 },
+    { msg: "Debug trap", kind: 1 },
+    { msg: "Breakpoint trap", kind: 3 },
+    { msg: "Overflow trap", kind: 4 },
+    { msg: "Bound range exceeded fault", kind: 5 },
+    { msg: "Invalid opcode fault", kind: 6 },
+    { msg: "Device not available fault", kind: 7 },
+    { msg: "Double fault", kind: 8 },
+    { msg: "Invalid TSS fault", kind: 10 },
+    { msg: "Segment not present fault", kind: 11 },
+    { msg: "Stack segment fault", kind: 12 },
+    { msg: "Protection fault", kind: 13 },
+    { msg: "Page fault", kind: 14 },
+    { msg: "FPU floating point fault", kind: 16 },
+    { msg: "Alignment check fault", kind: 17 },
+    { msg: "Machine check fault", kind: 18 },
+    { msg: "SIMD floating point fault", kind: 19 }
+  ];
+
+  for (const ex of x86Exceptions) {
+    if (log.toLowerCase().includes(ex.msg.toLowerCase())) {
+      summary = `x86_64 ${ex.msg} (#${ex.kind})`;
+
+      if (ex.kind === 14) { // Page Fault
+        const pfDetail = log.match(/Page fault:\s+([0-9a-fA-F]+)\s+PageFaultError\s*\{([\s\S]*?)\}/);
+        if (pfDetail) detail = `Addr: 0x${pfDetail[1]} | Flags: ${pfDetail[2].replace(/\s+/g, ' ')}`;
+      }
+
+      if (ex.kind === 13) { // Protection Fault
+        const protMatch = log.match(/Protection fault code=([0-9a-fA-Fx]+)/);
+        if (protMatch) detail = `Error Code: ${protMatch[1]}`;
+      }
+
+      return { summary, detail };
+    }
+  }
+
+  if (log.includes("GUARD PAGE")) {
+    return { summary: "Stack Overflow", detail: "Process hit a kernel-protected Guard Page." };
+  }
+
+  return { summary, detail: "No specific exception pattern recognized in logs." };
+};
+
+/**
+ * Parses the memory map from LD_DEBUG or Fault logs.
+ * @param {string} ldDebugLog - The raw LD_DEBUG output.
+ * @param {string} faultLog - The raw Page Fault message (for static binaries).
+ * @returns {Array} List of module objects {path, start, end, static}
+ */
+export const parseMemoryMap = (ldDebugLog, faultLog) => {
+  const memoryMap = [];
+  const ldLines = ldDebugLog.split('\n');
+
+  let lastFoundPath = null;
+  const foundAtRegex = /found at '(.*?)'/;
+  const loadingObjectRegex = /loading object: (.*?) at (0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+) \(pie: (\w+)\)/;
+
+  for (const line of ldLines) {
+    const foundMatch = line.match(foundAtRegex);
+    if (foundMatch) {
+      lastFoundPath = foundMatch[1];
+      continue;
+    }
+
+    const loadingMatch = line.match(loadingObjectRegex);
+    if (loadingMatch) {
+      let objectPath = loadingMatch[1].split("'").join("").trim();
+      if (!objectPath.startsWith('/') && lastFoundPath) {
+        objectPath = lastFoundPath;
+      }
+
+      if (objectPath) {
+        memoryMap.push({
+          path: objectPath,
+          start: BigInt(loadingMatch[2]),
+          end: BigInt(loadingMatch[3]),
+          static: loadingMatch[4] === "false",
+        });
+      }
+      lastFoundPath = null;
+    }
+  }
+
+  // Fallback for static binaries (Redox specific)
+  if (memoryMap.length === 0) {
+    const nameRegex = /NAME ([\w\/\-]+)/;
+    const nameFound = faultLog.match(nameRegex);
+    if (nameFound) {
+      memoryMap.push({
+        path: nameFound[1],
+        start: 0n,
+        end: 0xffffffffffffffffn, // Placeholder
+        static: true,
+      });
+    }
+  }
+
+  return memoryMap;
+};
+
+/**
+ * Resolves a runtime address to a symbol and file path.
+ * @param {BigInt} targetAddr - The runtime address (RIP/PC).
+ * @param {Array} memoryMap - Result from parseMemoryMap.
+ * @param {FileSystemDirectoryHandle} sysroot - The user selected directory handle.
+ * @param {Object} deps - Object containing findFileInDirectory and ELFParser.
+ */
+export const getAddressMetadata = async (targetAddr, memoryMap, sysroot) => {
+  const module = memoryMap.find(m => targetAddr >= m.start && (m.static || targetAddr <= m.end));
+
+  if (!module) {
+    return {
+      addr: '0x' + targetAddr.toString(16).padStart(8, '0'),
+      symbol: '<External/Unknown>',
+      module: '??',
+      gdb: ''
+    };
+  }
+
+  const runtimeModuleOffset = module.start * BigInt(module.static ? 0 : 1);
+  const pathModule = module.path.replace(/^\//, '');
+
+  try {
+    const fileHandle = await findFileInDirectory(sysroot, pathModule);
+    const file = await fileHandle.getFile();
+    const arrayBuffer = await file.arrayBuffer();
+    const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
+
+    let foundSym = "???";
+    let gdbCmd = `gdb -batch -ex 'file ${pathModule}'`;
+
+    // Search symbols
+    for (const sym of elf.symbols) {
+      if (!sym.value || !sym.size) continue;
+
+      const symStart = Number(runtimeModuleOffset) + sym.value;
+      const symEnd = symStart + sym.size;
+
+      if (Number(targetAddr) >= symStart && Number(targetAddr) < symEnd) {
+        const offset = Number(targetAddr) - symStart;
+        foundSym = `${sym.name} + 0x${offset.toString(16)}`;
+        gdbCmd += ` -ex 'disassemble 0x${symStart.toString(16)}, 0x${symEnd.toString(16)}'`;
+        return {
+          addr: '0x' + targetAddr.toString(16),
+          symbol: foundSym,
+          module: pathModule,
+          gdb: gdbCmd
+        };
+      }
+    }
+
+    return {
+      addr: '0x' + targetAddr.toString(16),
+      symbol: elf.symbols.length == 0 ? '(stripped)' : '(unknown)',
+      module: pathModule,
+      gdb: gdbCmd + ` -ex 'info line *0x${targetAddr.toString(16)}'`
+    };
+  } catch (e) {
+    return {
+      addr: '0x' + targetAddr.toString(16),
+      symbol: '',
+      module: pathModule,
+      gdb: `file ${pathModule}`
+    };
+  }
+};
+
+
 const setup = function () {
   const faultLog = ref(window.sessionStorage.faultLog || '');
   const ldDebugLog = ref(window.sessionStorage.ldDebugLog || '');
@@ -440,13 +654,53 @@ const setup = function () {
     }
   };
 
+  const generateFullReport = async () => {
+    isLoading.value = true;
+    disassemblyOutput.value = 'Parsing memories...\n';
+    try {
+      const memoryMap = parseMemoryMap(ldDebugLog.value, faultLog.value);
+
+      const { summary, detail } = analyzeCrashCause(faultLog.value);
+      let reportText = `CRASH ANALYSIS\n`;
+      reportText += `--------------\n`;
+      reportText += ` Summary: ${summary}\n`;
+      reportText += ` Detail:  ${detail}\n`;
+      let stackText = '\nStack Detail\n';
+      let gdbText = '\nGDB commands\n';
+      let i = 0;
+      for (const addrStr of callStacks.value) {
+        disassemblyOutput.value += `[${i++} / ${callStacks.value.length}] Reading ${addrStr}\n`;
+
+        const meta = await getAddressMetadata(
+          BigInt(addrStr),
+          memoryMap,
+          sysrootDirHandle.value,
+        );
+
+        stackText += `#${i.toString().padStart(2)} ${meta.addr} | [${meta.module}] ${meta.symbol}\n`;
+        gdbText += `#${i.toString().padStart(2)} ${meta.gdb || '??'}\n`;
+      }
+
+      disassemblyOutput.value = reportText + stackText + gdbText;
+      isLoading.value = false;
+      error.value = '';
+      currentSymbolName.value = '';
+      currentSymbolName2.value = '';
+    } catch (e) {
+      console.error("Analysis failed:", e);
+      error.value = e.message || e.toString();
+      disassemblyOutput.value += `\nAnalysis failed.\n\n${error.value}`;
+      analysisData.value = null; // Clear context on failure
+    }
+  };
+
   // Cleanup Capstone instance when component is unmounted
   // onUnmounted(() => { if (analysisData.value) analysisData.value.cs.close(); });
 
   return {
     faultLog, ldDebugLog, sysrootDirHandle, disassemblyOutput, isLoading, error,
     successMessage, isReady, analysisData, jumpAddress, currentSymbolName, currentSymbolName2, callStacks,
-    selectDirectory, analyzeCrash, jumpToAddress, jumpToStack
+    selectDirectory, analyzeCrash, jumpToAddress, jumpToStack, generateFullReport
   };
 };
 

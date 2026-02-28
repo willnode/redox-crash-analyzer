@@ -12,6 +12,7 @@
     window.elfist = elfist;
   </script>
 </head>
+
 <body>
 
   <div id="app">
@@ -47,6 +48,9 @@
       </div>
       <button @click="analyzeCrash" :disabled="isLoading || !isReady">
         {{ isLoading ? 'Analyzing...' : 'Analyze Crash' }}
+      </button>
+      <button @click="generateFullReport" :disabled="isLoading || callStacks.length == 0" style="margin-top: 10px;">
+        Full Stack Report
       </button>
     </div>
 

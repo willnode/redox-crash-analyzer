@@ -164,7 +164,7 @@ pre {
 
 #fault-stack-div {
   display: flex;
-  max-height: 45vh;
+  max-height: calc(45vh - 10em);
 }
 
 #fault-stack-div>div {
