@@ -22,11 +22,17 @@ function waitForNextFrame() {
   });
 }
 
+/**
+ * 
+ * @param {*} dirHandle 
+ * @param {string} path 
+ * @returns 
+ */
 const findFileInDirectory = async (dirHandle, path) => {
   if (path.startsWith('lib')) {
     path = 'usr/' + path;
   }
-  if (path == 'usr/lib/libc.so.6') {
+  if (path == 'usr/lib/libc.so.6' || path.includes('ld.so')) {
     path = 'usr/lib/libc.so';
   }
   if (path == 'usr/bin/env') {
@@ -35,6 +41,7 @@ const findFileInDirectory = async (dirHandle, path) => {
   if (path == 'usr/bin/sh') {
     path = 'usr/bin/bash';
   }
+  console.log(path);
   const parts = path.split('/').filter(p => p && p !== '.');
   let currentHandle = dirHandle;
   for (const part of parts.slice(0, -1)) {
