@@ -365,7 +365,9 @@ const setup = function () {
       let reportText = `CRASH ANALYSIS\n`;
       reportText += `--------------\n`;
       reportText += ` Summary: ${summary}\n`;
-      reportText += ` Detail:  ${detail}\n`;
+      if (detail) {
+        reportText += ` Detail:  ${detail}\n`;
+      }
       let stackText = '\nStack Detail\n';
       let gdbText = '\nGDB commands\n';
       let i = 0;
