@@ -292,3 +292,55 @@ export const analyzeCrashCause = (log) => {
 
   return { summary, detail: "No specific exception pattern recognized in logs." };
 };
+
+/**
+ * Disassembles a window of instructions around a target address.
+ * 
+ * @param {Object} elf - Parsed ELF object
+ * @param {ArrayBuffer} arrayBuffer - Raw file buffer
+ * @param {BigInt} runtimeModuleOffset - Base offset of the module
+ * @param {BigInt|Number} targetAddr - The address to center around
+ * @param {Number} startDisasmAddr - The safe start boundary (usually sym.start)
+ * @param {Number} linesBefore - How many instructions before target to return
+ * @param {Number} linesAfter - How many instructions after target to return
+ * @returns {Array} Array of Capstone instruction objects
+ */
+export const getInstructionWindow = (elf, arrayBuffer, runtimeModuleOffset, targetAddr, startDisasmAddr, linesBefore, linesAfter) => {
+  let arch, mode;
+  if (elf.header.machine === 62) { arch = window.cs.ARCH_X86; mode = window.cs.MODE_64; }
+  else if (elf.header.machine === 183) { arch = window.cs.ARCH_ARM64; mode = window.cs.MODE_ARM; }
+  else return []; // Unsupported arch
+
+  const textSection = elf.sections.find(s => s.name === '.text');
+  if (!textSection) return [];
+
+  const csInst = new window.cs.Capstone(arch, mode);
+  const runtimeTextSectionStart = runtimeModuleOffset + BigInt(textSection.addr);
+  const code = new Uint8Array(arrayBuffer, textSection.offset, textSection.size);
+
+  const startAddrNum = Number(startDisasmAddr);
+  const targetAddrNum = Number(targetAddr);
+  const offsetInTextSection = startAddrNum - Number(runtimeTextSectionStart);
+
+  if (offsetInTextSection < 0 || offsetInTextSection >= code.length) {
+    csInst.close();
+    return [];
+  }
+
+  // Calculate safe chunk size: Distance to target + enough room for trailing instructions
+  const bytesToTarget = Math.max(0, targetAddrNum - startAddrNum);
+  const chunkSize = bytesToTarget + (linesAfter * 15) + 100; // 15 bytes max per x86 instruction
+  const chunk = code.slice(offsetInTextSection, offsetInTextSection + chunkSize);
+
+  // Disassemble
+  const instructions = csInst.disasm(chunk, startAddrNum, bytesToTarget + linesAfter + 50);
+  csInst.close(); // Prevent memory leaks!
+
+  const targetIdx = instructions.findIndex(i => i.address >= targetAddrNum);
+  if (targetIdx !== -1) {
+    const startIdx = Math.max(0, targetIdx - linesBefore);
+    const endIdx = Math.min(instructions.length, targetIdx + linesAfter + 1);
+    return instructions.slice(startIdx, endIdx);
+  }
+  return [];
+};

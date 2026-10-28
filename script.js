@@ -2,7 +2,8 @@
 const { createApp, ref, computed, nextTick } = Vue;
 import {
   waitForNextFrame, analyzeCrashCause, calculateExecutableLayout,
-  findFileInDirectory, getModuleForAddress, parseMemoryMap, resolveSymbolAtAddress
+  findFileInDirectory, getModuleForAddress, parseMemoryMap, resolveSymbolAtAddress,
+  getInstructionWindow,
 } from './utils.js';
 
 // --- Configuration for the disassembly window ---
@@ -18,7 +19,7 @@ const LINES_AFTER = 200;
  * @param {FileSystemDirectoryHandle} sysroot  The user selected directory handle.
  * @param {Object} deps        Object containing findFileInDirectory and ELFParser.
  */
-export const getAddressMetadata = async (targetAddr, memoryMap, sysroot) => {
+export const getAddressMetadata = async (targetAddr, memoryMap, sysroot, isStackReturnAddr = false) => {
   const module = getModuleForAddress(targetAddr, memoryMap);
 
   if (!module) {
@@ -40,14 +41,41 @@ export const getAddressMetadata = async (targetAddr, memoryMap, sysroot) => {
     const elf = new elfist.ELFParser(new Uint8Array(arrayBuffer));
 
     let gdbCmd = `gdb -batch -ex 'file ${pathModule}'`;
+    let asmPreview = '';
+
 
     const sym = resolveSymbolAtAddress(elf, runtimeModuleOffset, targetAddr);
+    const startDisasmAddr = sym ? sym.start : Number(targetAddr) - 30;
+    const instructions = getInstructionWindow(elf, arrayBuffer, runtimeModuleOffset, targetAddr, startDisasmAddr, 3, 3);
+    const targetIdx = instructions.findIndex(i => i.address >= Number(targetAddr));
+
+    if (instructions.length > 0 && targetIdx !== -1) {
+      let effectiveTargetIdx = targetIdx;
+      // Shift backward by 1 to highlight the CALL instruction instead of the return address
+      if (isStackReturnAddr && effectiveTargetIdx > 0) {
+        effectiveTargetIdx -= 1;
+      }
+      const effectiveHighlightAddr = instructions[effectiveTargetIdx].address;
+      // Center the 7 lines around the effective target instead of the original target
+      const startIdx = Math.max(0, effectiveTargetIdx - 3);
+      const endIdx = Math.min(instructions.length, effectiveTargetIdx + 4);
+      asmPreview = instructions.slice(startIdx, endIdx).map(insn => {
+        const isTarget = insn.address === effectiveHighlightAddr;
+        const prefix = isTarget ? "=>" : "  ";
+        const addrStr = insn.address.toString(16).padStart(8, '0');
+        return `${prefix} 0x${addrStr}:  ${insn.mnemonic.padEnd(6)} ${insn.op_str}`;
+      }).join('\n');
+    } else {
+      asmPreview = '  [No assembly data]';
+    }
+
     if (sym) {
       return {
         addr: `0x${targetAddr.toString(16)}`,
         symbol: `${sym.name} + 0x${sym.offset.toString(16)}`,
         module: pathModule,
-        gdb: gdbCmd + ` -ex 'disassemble 0x${sym.start.toString(16)}, 0x${sym.end.toString(16)}'`
+        gdb: gdbCmd + ` -ex 'disassemble 0x${sym.start.toString(16)}, 0x${sym.end.toString(16)}'`,
+        asmPreview
       };
     }
 
@@ -55,9 +83,11 @@ export const getAddressMetadata = async (targetAddr, memoryMap, sysroot) => {
       addr: '0x' + targetAddr.toString(16),
       symbol: elf.symbols.length == 0 ? '(stripped)' : '(unknown)',
       module: pathModule,
-      gdb: gdbCmd + ` -ex 'info line *0x${targetAddr.toString(16)}'`
+      gdb: gdbCmd + ` -ex 'info line *0x${targetAddr.toString(16)}'`,
+      asmPreview
     };
   } catch (e) {
+    console.error(e);
     return {
       addr: '0x' + targetAddr.toString(16),
       symbol: '',
@@ -223,70 +253,25 @@ const setup = function () {
       throw new Error(`Address 0x${ripNum.toString(16)} is outside the .text section (runtime start: 0x${runtimeSegmentStart.toString(16)}, size: 0x${code.length.toString(16)}).`);
     }
 
-    let instructions = [];
-    let currentAddr = symbol?.start || (ripNum - 500);
-    const endAddr = symbol?.end || (ripNum + 500);
-    let offsetInTextSection = currentAddr - Number(runtimeTextSectionStart);
-    while (true) {
-      const safeOffset = Math.max(0, offsetInTextSection);
-      const codeChunked = code.slice(safeOffset);
+    const startDisasmAddr = symbol ? symbol.start : (ripNum - 500);
 
-      let i = csInst.disasm(codeChunked, currentAddr, 1000);
-
-      if (!i || i.length === 0) break;
-
-      for (const insn of i) {
-        if (insn.address < endAddr) {
-          instructions.push(insn);
-          currentAddr = insn.address + insn.size;
-        } else {
-          currentAddr = endAddr;
-          break;
-        }
-      }
-
-      const lastInsn = i[i.length - 1];
-      currentAddr = lastInsn.address + lastInsn.size;
-
-      offsetInTextSection = currentAddr - Number(runtimeTextSectionStart);
-      if (currentAddr >= ripNum || instructions.length > 5000) {
-        break;
-      }
-
-      const line = `\n  Seeking 0x${currentAddr.toString(16)} ${Math.trunc((currentAddr - Number(runtimeTextSectionStart)) / (ripNum - Number(runtimeTextSectionStart)) * 1000) / 10}%`;
-      disassemblyOutput.value += line;
-      await waitForNextFrame();
-    }
-
-    const minAddr = instructions[0].address;
-    const maxAddr = instructions[instructions.length - 1].address;
-    disassemblyOutput.value += `\n Instruction start at 0x${minAddr.toString(16)}`;
-    disassemblyOutput.value += `\n Instruction end at 0x${maxAddr.toString(16)}`;
-    disassemblyOutput.value += `\n looking at 0x${ripNum.toString(16)}`;
-
-    const isStackReturnAddr = callStacks.value.slice(1).some(addr =>
-      BigInt(addr) === targetAddrBigInt
+    // Grab exactly the 401 instructions we need (200 before + 1 target + 200 after)
+    const displayInstructions = getInstructionWindow(
+      elf, arrayBuffer, runtimeModuleOffset, targetAddrBigInt, startDisasmAddr, LINES_BEFORE, LINES_AFTER
     );
-    let targetIndex = instructions.findIndex(insn => insn.address >= ripNum);
-    if (targetIndex === -1) {
-      throw new Error(`Could not locate instruction at or after 0x${ripNum.toString(16)}.`);
+
+    if (displayInstructions.length === 0) {
+      throw new Error(`Could not disassemble instructions around 0x${ripNum.toString(16)}`);
     }
 
-    // Could be a return address, which should highlight previous instruction
-    if (isStackReturnAddr && targetIndex > 0) {
-      targetIndex = targetIndex - 1;
-      var effectiveHighlightAddr = instructions[targetIndex].address;
-    } else {
-      var effectiveHighlightAddr = ripNum;
-    }
+    let effectiveHighlightAddr = ripNum;
+    const isStackReturnAddr = callStacks.value.slice(1).some(addr => BigInt(addr) === targetAddrBigInt);
 
-    if (targetIndex === -1) {
-      throw new Error(`Could not locate instruction at or after 0x${ripNum.toString(16)}.`);
+    // If it's a return address, highlight the instruction immediately BEFORE the return (the CALL)
+    if (isStackReturnAddr) {
+      const targetIndex = displayInstructions.findIndex(insn => insn.address >= ripNum);
+      if (targetIndex > 0) effectiveHighlightAddr = displayInstructions[targetIndex - 1].address;
     }
-
-    const startIndex = Math.max(0, targetIndex - LINES_BEFORE);
-    const endIndex = targetIndex + LINES_AFTER + 1;
-    const displayInstructions = instructions.slice(startIndex, endIndex);
 
     // Format for display
     let htmlOutput = '';
@@ -385,15 +370,18 @@ const setup = function () {
       let gdbText = '\nGDB commands\n';
       let i = 0;
       for (const addrStr of callStacks.value) {
-        disassemblyOutput.value += `[${i++} / ${callStacks.value.length}] Reading ${addrStr}\n`;
+        disassemblyOutput.value += `[${i} / ${callStacks.value.length}] Reading ${addrStr}\n`;
 
+        const isStackReturnAddr = i++ > 0;
         const meta = await getAddressMetadata(
           BigInt(addrStr),
           memoryMap,
           sysrootDirHandle.value,
+          isStackReturnAddr,
         );
 
         stackText += `#${i.toString().padStart(2)} ${meta.addr} | [${meta.module}] ${meta.symbol}\n`;
+        stackText += `${meta.asmPreview || '  [No assembly location]'}\n`;
         gdbText += `#${i.toString().padStart(2)} ${meta.gdb || '??'}\n`;
       }
 
